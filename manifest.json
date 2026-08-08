@@ -1,0 +1,10 @@
+{
+  "Name": "Stardew Wiki AI Agent",
+  "Author": "snow",
+  "Version": "0.1.0",
+  "Description": "Ask the Chinese Stardew Valley Wiki questions from the in-game chat.",
+  "UniqueID": "snow.StardewWikiAgent",
+  "EntryDll": "StardewWikiAgent.dll",
+  "MinimumApiVersion": "4.5.2",
+  "MinimumGameVersion": "1.6.15"
+}
