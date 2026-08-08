@@ -12,6 +12,7 @@ public sealed class ModConfig
     public int RequestTimeoutSeconds { get; set; } = 90;
     public int MaxAgentSteps { get; set; } = 6;
     public int MaxAnswerCharacters { get; set; } = 1800;
+    public int MaxResponseTokens { get; set; } = 2048;
     public bool IncludeGameContext { get; set; } = true;
     public bool EnableQuestLogTool { get; set; } = true;
 
@@ -31,6 +32,11 @@ public sealed class ModConfig
         {
             monitor.Log("MaxAnswerCharacters must be between 200 and 8000; using 1800.", LogLevel.Warn);
             this.MaxAnswerCharacters = 1800;
+        }
+        if (this.MaxResponseTokens is < 256 or > 8192)
+        {
+            monitor.Log("MaxResponseTokens must be between 256 and 8192; using 2048.", LogLevel.Warn);
+            this.MaxResponseTokens = 2048;
         }
     }
 }

@@ -11,6 +11,7 @@ internal sealed class AgentSettings
     public TimeSpan RequestTimeout { get; private init; }
     public int MaxAgentSteps { get; private init; }
     public int MaxAnswerCharacters { get; private init; }
+    public int MaxResponseTokens { get; private init; }
     public bool IncludeGameContext { get; private init; }
     public bool IsDeepSeekV4 => this.Model.EndsWith("deepseek-v4-flash", StringComparison.OrdinalIgnoreCase);
     public bool IsConfigured => Uri.TryCreate(this.BaseUrl, UriKind.Absolute, out Uri? baseUri)
@@ -46,6 +47,7 @@ internal sealed class AgentSettings
             RequestTimeout = TimeSpan.FromSeconds(config.RequestTimeoutSeconds),
             MaxAgentSteps = config.MaxAgentSteps,
             MaxAnswerCharacters = config.MaxAnswerCharacters,
+            MaxResponseTokens = config.MaxResponseTokens,
             IncludeGameContext = config.IncludeGameContext
         };
     }
