@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using OpenAI.Chat;
 using StardewModdingAPI;
 using StardewWikiAgent.Api;
 using StardewWikiAgent.Game;
@@ -107,14 +106,24 @@ internal sealed class AgentToolRegistry
         }
     }
 
-    public IReadOnlyList<ChatTool> OpenAiDefinitions()
+    public IReadOnlyList<object> OpenAiDefinitions()
     {
-        return this.Snapshot()
-            .Select(tool => ChatTool.CreateFunctionTool(
-                tool.Name,
-                tool.Description,
-                BinaryData.FromString(tool.ParametersSchemaJson)
-            ))
-            .ToArray();
+        return this.Snapshot().Select(tool => (object)new Dictionary<string, object?>
+        {
+            ["type"] = "function",
+            ["function"] = new Dictionary<string, object?>
+            {
+                ["name"] = tool.Name,
+                ["description"] = tool.Description,
+                ["parameters"] = ParseSchema(tool.ParametersSchemaJson)
+            }
+        }).ToArray();
+    }
+
+    private static JsonElement ParseSchema(string schema)
+    {
+        // Clone the element so the schema stays serializable after the document is disposed.
+        using JsonDocument document = JsonDocument.Parse(schema);
+        return document.RootElement.Clone();
     }
 }

@@ -8,10 +8,13 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <!-- Stardew/SMAPI requires net6.0; the OpenAI SDK's transitive packages use their netstandard2.0 assets. -->
-    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
-    <!-- Bundle SDK/runtime dependencies plus third-party assemblies into the mod folder. -->
-    <BundleExtraAssemblies>System,ThirdParty</BundleExtraAssemblies>
+    <!--
+      Bundle only genuine third-party assemblies (sherpa-onnx, PortAudioSharp) into the mod
+      folder. Framework assemblies (System.*, Microsoft.Extensions.*) must never be copied:
+      the Stardew/SMAPI 4.5.2 process already loads the .NET 6 versions of those, and shipping
+      private 10.0.x copies breaks the mod loader's assembly resolution.
+    -->
+    <BundleExtraAssemblies>ThirdParty</BundleExtraAssemblies>
     <!-- A safety net for stale output produced before platform-specific runtime selection was enabled. -->
     <IgnoreModFilePatterns>^runtimes/</IgnoreModFilePatterns>
 
@@ -34,7 +37,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="OpenAI" Version="2.12.0" />
     <PackageReference Include="Pathoschild.Stardew.ModBuildConfig" Version="4.4.0" />
 
     <!--
