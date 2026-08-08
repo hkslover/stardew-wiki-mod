@@ -12,6 +12,7 @@ internal sealed class AgentSettings
     public int MaxAgentSteps { get; private init; }
     public int MaxAnswerCharacters { get; private init; }
     public int MaxResponseTokens { get; private init; }
+    public string ReasoningEffort { get; private init; } = "medium";
     public bool IncludeGameContext { get; private init; }
     public bool IsDeepSeekV4 => this.Model.Contains("deepseek-v4", StringComparison.OrdinalIgnoreCase);
     public bool IsConfigured => Uri.TryCreate(this.BaseUrl, UriKind.Absolute, out Uri? baseUri)
@@ -48,6 +49,7 @@ internal sealed class AgentSettings
             MaxAgentSteps = config.MaxAgentSteps,
             MaxAnswerCharacters = config.MaxAnswerCharacters,
             MaxResponseTokens = config.MaxResponseTokens,
+            ReasoningEffort = config.ReasoningEffort.ToLowerInvariant(),
             IncludeGameContext = config.IncludeGameContext
         };
     }

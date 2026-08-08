@@ -16,6 +16,10 @@ public sealed class ModConfig
     public int MaxAgentSteps { get; set; } = 8;
     public int MaxAnswerCharacters { get; set; } = 1800;
     public int MaxResponseTokens { get; set; } = DefaultMaxResponseTokens;
+
+    // Thinking budget for reasoning models (DeepSeek V4's reasoning_effort). Lower
+    // values spend fewer billed reasoning tokens per query; "high" maximizes depth.
+    public string ReasoningEffort { get; set; } = "medium";
     public bool IncludeGameContext { get; set; } = true;
     public bool EnableQuestLogTool { get; set; } = true;
 
@@ -59,6 +63,11 @@ public sealed class ModConfig
             );
             this.MaxResponseTokens = DefaultMaxResponseTokens;
         }
+        if (!IsValidReasoningEffort(this.ReasoningEffort))
+        {
+            monitor.Log("ReasoningEffort must be one of low/medium/high; using medium.", LogLevel.Warn);
+            this.ReasoningEffort = "medium";
+        }
         if (this.VoiceMaxSeconds is < 3 or > 120)
         {
             monitor.Log("VoiceMaxSeconds must be between 3 and 120; using 30.", LogLevel.Warn);
@@ -70,4 +79,10 @@ public sealed class ModConfig
             this.VoiceNumThreads = 2;
         }
     }
+
+    private static bool IsValidReasoningEffort(string value) =>
+        value is not null
+        && (value.Equals("low", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("medium", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("high", StringComparison.OrdinalIgnoreCase));
 }

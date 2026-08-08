@@ -214,12 +214,14 @@ internal sealed class ModEntry : Mod
             this.Monitor.Log("AI agent is not initialized.", LogLevel.Error);
             return;
         }
-        GameContextSnapshot context = GameContextSnapshot.Capture();
         CancellationToken requestToken = this.requestCancellation.Token;
         _ = Task.Run(async () =>
         {
             try
             {
+                // SMAPI runs console commands on its own input thread, so capture the
+                // live game state on the main update loop before touching Game1.
+                GameContextSnapshot context = await this.mainThread.InvokeAsync(GameContextSnapshot.Capture);
                 AgentAnswer answer = await this.agent.AskAsync(question, context, requestToken);
                 this.mainThread.Enqueue(() =>
                 {
@@ -373,7 +375,7 @@ internal sealed class ModEntry : Mod
             $"Configured={settings.IsConfigured}; Model={settings.Model}; " +
             $"BaseUrl={settings.BaseUrl}; WikiApi={settings.WikiApiUrl}; " +
             $"MaxSteps={settings.MaxAgentSteps}; MaxResponseTokens={settings.MaxResponseTokens}; " +
-            $"QuestLogTool={this.config.EnableQuestLogTool}",
+            $"ReasoningEffort={settings.ReasoningEffort}; QuestLogTool={this.config.EnableQuestLogTool}",
             LogLevel.Info
         );
     }

@@ -19,7 +19,9 @@
 
 `MaxResponseTokens` 默认是 `8192`，控制模型单次返回的 token 上限；旧版本自动生成的默认值 `2048` 会在下次启动时迁移到 `8192`。`MaxAnswerCharacters` 默认仍为 `1800`，它只控制最终显示在聊天框里的正文字符数，两者不是同一个限制。
 
-使用 DeepSeek V4 Flash/Pro 时，将 `BaseUrl` 设置为 `https://api.deepseek.com`、`Model` 设置为对应的 `deepseek-v4-*` 名称，并填写 DeepSeek API Key。Mod 的协议客户端会直接发送 DeepSeek 专用的 `max_tokens`、思考模式（`thinking`）与 `high` 思考等级（`reasoning_effort`）字段；带 Wiki 工具调用时也会在后续轮次中原样回放 DeepSeek 返回的 `reasoning_content`。
+使用 DeepSeek V4 Flash/Pro 时，将 `BaseUrl` 设置为 `https://api.deepseek.com`、`Model` 设置为对应的 `deepseek-v4-*` 名称，并填写 DeepSeek API Key。Mod 的协议客户端会直接发送 DeepSeek 专用的 `max_tokens`、思考模式（`thinking`）与思考等级（`reasoning_effort`）字段；带 Wiki 工具调用时也会在后续轮次中原样回放 DeepSeek 返回的 `reasoning_content`。
+
+`ReasoningEffort` 控制思考等级，默认 `medium`，可选 `low`/`medium`/`high`。它只作用于 DeepSeek V4 这类推理模型：等级越低，单次查询消耗的按量计费思考 token 越少；需要更强推理时再调到 `high`。
 
 `EnableQuestLogTool` 默认为 `true`。关闭后，任务日志读取工具不会注册，任务内容也不会发送给所配置的 AI 服务。任务日志只在问题确实涉及当前任务时按需读取，不会读取 SMAPI 调试日志或磁盘文件。
 

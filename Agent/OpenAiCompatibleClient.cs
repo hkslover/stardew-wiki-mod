@@ -54,7 +54,7 @@ internal sealed class OpenAiCompatibleClient
             // No temperature is sent in thinking mode.
             payload["max_tokens"] = this.settings.MaxResponseTokens;
             payload["thinking"] = new Dictionary<string, object?> { ["type"] = "enabled" };
-            payload["reasoning_effort"] = "high";
+            payload["reasoning_effort"] = this.settings.ReasoningEffort;
         }
         else
         {

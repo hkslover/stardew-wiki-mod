@@ -75,7 +75,7 @@ internal sealed class WorldMapLocationTool : IAgentTool
                 .ToArray();
 
             if (exactMatches.Length == 1)
-                return Task.FromResult(Matched(query, exactMatches, exactMatches[0]));
+                return Task.FromResult(Matched(query, exactMatches[0]));
             if (exactMatches.Length > 1)
                 return Task.FromResult(Ambiguous(query, exactMatches));
 
@@ -111,7 +111,7 @@ internal sealed class WorldMapLocationTool : IAgentTool
                 : Ambiguous(query, ranked));
         }
 
-        return Task.FromResult(Matched(query, ranked, resolved));
+        return Task.FromResult(Matched(query, resolved));
     }
 
     private static LocationCandidate[] GetAllCandidates()
@@ -149,16 +149,14 @@ internal sealed class WorldMapLocationTool : IAgentTool
             .ToArray();
     }
 
-    private static string Matched(
-        string query,
-        IReadOnlyCollection<LocationCandidate> results,
-        LocationCandidate resolved)
+    private static string Matched(string query, LocationCandidate resolved)
     {
+        // On a unique match the model only needs the navigation block; omit the
+        // ranked-candidate list to keep the tool result small.
         return ToolResultEnvelope.Success(new
         {
             status = "matched",
             query,
-            results = results.Select(ToRankedResult).ToArray(),
             navigation = new
             {
                 displayName = resolved.DisplayName,

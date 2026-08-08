@@ -1,3 +1,4 @@
+using System.Text.Json;
 using StardewModdingAPI;
 using StardewValley;
 using StardewWikiAgent.Agent;
@@ -81,8 +82,8 @@ internal sealed class PlayerStatusTool : IAgentTool
 internal sealed class RelationshipsTool : IAgentTool
 {
     public string Name => "get_relationships";
-    public string Description => "Read each villager's friendship level (hearts 0-14), birthday, and how many gifts were given today/this week. Use it for gifting and social advice.";
-    public string ParametersSchemaJson => "{\"type\":\"object\",\"properties\":{}}";
+    public string Description => "Read villagers' friendship level (hearts 0-14), birthday, and how many gifts were given today/this week. Pass 'name' with a villager's Chinese display name (or internal name) to get just that villager; leave it empty for everyone. Use it for gifting and social advice.";
+    public string ParametersSchemaJson => "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Optional villager name (Chinese display name works best, e.g. 艾米丽) to return only that villager; leave empty for all.\"}}}";
     public ToolExecutionAffinity ExecutionAffinity => ToolExecutionAffinity.MainThreadReadOnly;
 
     public Task<string> ExecuteAsync(string argumentsJson, GameContextSnapshot context, CancellationToken cancellationToken)
@@ -90,23 +91,77 @@ internal sealed class RelationshipsTool : IAgentTool
         if (!Context.IsWorldReady || Game1.player is null)
             return Task.FromResult(GameToolJson.NotReady());
 
-        var people = new List<object>();
+        string name;
+        try
+        {
+            using JsonDocument args = JsonDocument.Parse(argumentsJson);
+            name = args.RootElement.TryGetProperty("name", out JsonElement nameElement)
+                && nameElement.ValueKind == JsonValueKind.String
+                    ? nameElement.GetString()?.Trim() ?? ""
+                    : "";
+        }
+        catch (JsonException)
+        {
+            return Task.FromResult(ToolResultEnvelope.Failure(
+                "invalid_arguments",
+                "The tool arguments are not valid JSON.",
+                "Call the tool again with a JSON object containing an optional string name."
+            ));
+        }
+
+        var people = new List<Villager>();
         foreach (var pair in Game1.player.friendshipData.Pairs)
         {
             Friendship friendship = pair.Value;
             NPC? npc = Game1.getCharacterFromName(pair.Key);
+            string displayName = npc?.displayName ?? pair.Key;
             string? birthday = npc is not null && !string.IsNullOrEmpty(npc.Birthday_Season)
                 ? $"{npc.Birthday_Season} {npc.Birthday_Day}"
                 : null;
-            people.Add(new
+            people.Add(new Villager(displayName, pair.Key, new
             {
-                name = npc?.displayName ?? pair.Key,
+                name = displayName,
                 hearts = friendship.Points / 250,
                 birthday,
                 giftsToday = friendship.GiftsToday,
                 giftsThisWeek = friendship.GiftsThisWeek
-            });
+            }));
         }
-        return Task.FromResult(ToolResultEnvelope.Success(new { relationships = people }));
+
+        string normalizedQuery = Normalize(name);
+        if (normalizedQuery.Length == 0)
+            return Task.FromResult(ToolResultEnvelope.Success(new
+            {
+                relationships = people.Select(person => person.JsonValue).ToArray()
+            }));
+
+        Villager[] matches = people
+            .Where(person => Normalize(person.DisplayName).Contains(normalizedQuery, StringComparison.Ordinal)
+                || Normalize(person.InternalName).Contains(normalizedQuery, StringComparison.Ordinal))
+            .ToArray();
+
+        if (matches.Length > 0)
+            return Task.FromResult(ToolResultEnvelope.Success(new
+            {
+                query = name,
+                matched = matches.Length,
+                relationships = matches.Select(person => person.JsonValue).ToArray()
+            }));
+
+        return Task.FromResult(ToolResultEnvelope.Failure(
+            "not_found",
+            "No villager matched that name.",
+            "Pick a name from availableNames, or call this tool again with an empty name to list everyone.",
+            new
+            {
+                query = name,
+                availableNames = people.Select(person => person.DisplayName).ToArray()
+            }
+        ));
     }
+
+    private static string Normalize(string value) =>
+        new(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    private sealed record Villager(string DisplayName, string InternalName, object JsonValue);
 }

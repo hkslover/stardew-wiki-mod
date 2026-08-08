@@ -22,7 +22,7 @@ internal sealed class AnswerPolicy
             && !normalized.Equals("stop", StringComparison.OrdinalIgnoreCase);
     }
 
-    public string? GetCorrection(bool sawLocationResult, bool sawSuccessfulWikiRead)
+    public string? GetCorrection(bool sawLocationResult, bool sawSuccessfulWikiRead, bool sawAnyToolCall)
     {
         if (this.needsNavigation && !sawLocationResult && !this.navigationCorrectionSent)
         {
@@ -30,7 +30,11 @@ internal sealed class AnswerPolicy
             return "The player's question asks for a location or directions. Before answering, call find_game_location with the Wiki-confirmed Chinese place name. If you are unsure of the exact name, look it up on the Wiki first.";
         }
 
-        if (this.needsWikiFacts && !sawSuccessfulWikiRead && !this.wikiCorrectionSent)
+        // Only nudge toward the Wiki when the model answered from pure memory (no
+        // tool at all). If it deliberately used any tool — e.g. get_player_status
+        // for a state-only question — trust that choice instead of forcing a
+        // pointless wiki_search/wiki_read round-trip.
+        if (this.needsWikiFacts && !sawSuccessfulWikiRead && !sawAnyToolCall && !this.wikiCorrectionSent)
         {
             this.wikiCorrectionSent = true;
             return "Answer only after consulting the Wiki: call wiki_search then wiki_read for the facts you need.";

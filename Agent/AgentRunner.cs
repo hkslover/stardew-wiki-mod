@@ -52,6 +52,7 @@ internal sealed class AgentRunner
         var answerPolicy = new AnswerPolicy(question);
         bool sawLocationResult = false;
         bool sawSuccessfulWikiRead = false;
+        bool sawAnyToolCall = false;
         bool lengthToolRetrySent = false;
         var messages = new List<Dictionary<string, object?>>
         {
@@ -177,6 +178,7 @@ internal sealed class AgentRunner
                 var assistantToolCalls = new List<object>();
                 if (hasToolCalls)
                 {
+                    sawAnyToolCall = true;
                     int callIndex = 0;
                     foreach (JsonElement call in toolCalls.EnumerateArray())
                     {
@@ -212,7 +214,7 @@ internal sealed class AgentRunner
                 {
                     string? correction = finalStep
                         ? null
-                        : answerPolicy.GetCorrection(sawLocationResult, sawSuccessfulWikiRead);
+                        : answerPolicy.GetCorrection(sawLocationResult, sawSuccessfulWikiRead, sawAnyToolCall);
                     if (correction is not null)
                     {
                         this.monitor.Log($"[{requestId}] Step {step + 1}: answer policy requested another tool round.", LogLevel.Debug);
