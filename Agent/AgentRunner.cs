@@ -70,16 +70,28 @@ internal sealed class AgentRunner
 
         for (int step = 0; step < this.settings.MaxAgentSteps; step++)
         {
+            // Reserve the final step for a tools-free answer: rather than dead-end
+            // with a "try again" message, drop the tools and make the model
+            // synthesize a reply from whatever Wiki content it already gathered.
+            bool finalStep = step == this.settings.MaxAgentSteps - 1;
+            if (finalStep)
+                messages.Add(new Dictionary<string, object?>
+                {
+                    ["role"] = "system",
+                    ["content"] = "The tool-call budget for this query is exhausted. Answer now, directly, using only the information already gathered — do NOT call any more tools. Reply in Simplified Chinese. If you cited pages, put their zh.stardewvalleywiki.com URLs on the final line starting with \"来源：\". If the information is insufficient, clearly say you cannot confirm."
+                });
+
+            IReadOnlyList<object> stepTools = finalStep ? Array.Empty<object>() : toolDefinitions;
             string toolChoice = step == 0 ? "required" : "auto";
             JsonDocument response;
             try
             {
-                response = await this.client.CompleteAsync(messages, toolDefinitions, toolChoice, timeout.Token);
+                response = await this.client.CompleteAsync(messages, stepTools, toolChoice, timeout.Token);
             }
             catch (LlmHttpException ex) when (step == 0 && ex.ResponseStatusCode is HttpStatusCode.BadRequest or HttpStatusCode.NotFound)
             {
                 this.monitor.Log("LLM endpoint rejected tool_choice=required; retrying with auto.", LogLevel.Debug);
-                response = await this.client.CompleteAsync(messages, toolDefinitions, "auto", timeout.Token);
+                response = await this.client.CompleteAsync(messages, stepTools, "auto", timeout.Token);
             }
 
             using (response)
