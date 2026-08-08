@@ -19,7 +19,12 @@ internal sealed class NavigationTarget
         try
         {
             using JsonDocument document = JsonDocument.Parse(json);
-            if (!document.RootElement.TryGetProperty("navigation", out JsonElement navigation)
+            JsonElement root = document.RootElement;
+            JsonElement payload = root.TryGetProperty("data", out JsonElement data)
+                && data.ValueKind == JsonValueKind.Object
+                    ? data
+                    : root;
+            if (!payload.TryGetProperty("navigation", out JsonElement navigation)
                 || navigation.ValueKind != JsonValueKind.Object)
                 return false;
 

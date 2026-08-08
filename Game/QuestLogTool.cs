@@ -2,6 +2,7 @@ using System.Text.Json;
 using StardewModdingAPI;
 using StardewValley;
 using StardewValley.Quests;
+using StardewWikiAgent.Agent;
 using StardewWikiAgent.Api;
 
 namespace StardewWikiAgent.Game;
@@ -39,9 +40,10 @@ internal sealed class QuestLogTool : IAgentTool
         }
         catch (JsonException)
         {
-            return Task.FromResult(JsonSerializer.Serialize(
-                new { error = "arguments are not valid JSON." },
-                GameToolJson.Options
+            return Task.FromResult(ToolResultEnvelope.Failure(
+                "invalid_arguments",
+                "The tool arguments are not valid JSON.",
+                "Call the tool again with a JSON object containing an optional string query."
             ));
         }
 
@@ -66,27 +68,32 @@ internal sealed class QuestLogTool : IAgentTool
             ? allQuests
             : allQuests.Where(quest => quest.SearchText.Contains(normalizedQuery, StringComparison.Ordinal)).ToArray();
 
-        object result = matches.Length > 0 || normalizedQuery.Length == 0
-            ? new
+        if (matches.Length > 0 || normalizedQuery.Length == 0)
+        {
+            return Task.FromResult(ToolResultEnvelope.Success(new
             {
                 query,
                 totalActiveQuests = Game1.player.questLog.Count,
                 matchedQuests = matches.Length,
                 unreadableQuests,
                 quests = matches.Select(quest => quest.JsonValue).ToArray()
-            }
-            : new
+            }));
+        }
+
+        return Task.FromResult(ToolResultEnvelope.Failure(
+            "not_found",
+            "No active quest matched that keyword.",
+            "Pick a more precise keyword from availableTitles, or call this tool again with an empty query to read all active quests.",
+            new
             {
                 query,
                 totalActiveQuests = Game1.player.questLog.Count,
                 matchedQuests = 0,
                 unreadableQuests,
                 quests = Array.Empty<object>(),
-                availableTitles = allQuests.Select(quest => quest.Title).ToArray(),
-                message = "No quest matched that keyword; pick a more precise keyword from availableTitles, or leave query empty to read all current quests."
-            };
-
-        return Task.FromResult(JsonSerializer.Serialize(result, GameToolJson.Options));
+                availableTitles = allQuests.Select(quest => quest.Title).ToArray()
+            }
+        ));
     }
 
     private static QuestEntry ToEntry(Quest quest)

@@ -1,7 +1,6 @@
-using System.Text.Encodings.Web;
-using System.Text.Json;
 using StardewModdingAPI;
 using StardewValley;
+using StardewWikiAgent.Agent;
 using StardewWikiAgent.Api;
 
 namespace StardewWikiAgent.Game;
@@ -9,13 +8,12 @@ namespace StardewWikiAgent.Game;
 /// <summary>Shared JSON options so Chinese display names are emitted as-is, not \uXXXX escapes.</summary>
 internal static class GameToolJson
 {
-    public static readonly JsonSerializerOptions Options = new()
-    {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
-
     public static string NotReady() =>
-        JsonSerializer.Serialize(new { error = "no save is loaded; game state is unavailable" }, Options);
+        ToolResultEnvelope.Failure(
+            "game_not_ready",
+            "No save is loaded, so live game state is unavailable.",
+            "Ask the player to load a save, then retry this tool."
+        );
 }
 
 /// <summary>Reads the player's carried inventory. Runs on the main thread and reads live game state.</summary>
@@ -35,12 +33,12 @@ internal sealed class InventoryTool : IAgentTool
             .Where(item => item is not null)
             .Select(item => new { name = item!.DisplayName, quantity = item.Stack })
             .ToArray();
-        return Task.FromResult(JsonSerializer.Serialize(new
+        return Task.FromResult(ToolResultEnvelope.Success(new
         {
             usedSlots = items.Length,
             capacity = Game1.player.MaxItems,
             items
-        }, GameToolJson.Options));
+        }));
     }
 }
 
@@ -58,7 +56,7 @@ internal sealed class PlayerStatusTool : IAgentTool
             return Task.FromResult(GameToolJson.NotReady());
 
         Farmer p = Game1.player;
-        return Task.FromResult(JsonSerializer.Serialize(new
+        return Task.FromResult(ToolResultEnvelope.Success(new
         {
             money = p.Money,
             energy = (int)p.Stamina,
@@ -75,7 +73,7 @@ internal sealed class PlayerStatusTool : IAgentTool
                 luck = p.LuckLevel
             },
             dailyLuck = p.DailyLuck
-        }, GameToolJson.Options));
+        }));
     }
 }
 
@@ -109,6 +107,6 @@ internal sealed class RelationshipsTool : IAgentTool
                 giftsThisWeek = friendship.GiftsThisWeek
             });
         }
-        return Task.FromResult(JsonSerializer.Serialize(new { relationships = people }, GameToolJson.Options));
+        return Task.FromResult(ToolResultEnvelope.Success(new { relationships = people }));
     }
 }

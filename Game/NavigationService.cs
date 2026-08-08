@@ -116,6 +116,7 @@ internal sealed class NavigationService : IDisposable
             if (!this.warnedDifferentRegion)
             {
                 this.warnedDifferentRegion = true;
+                Game1.addHUDMessage(HUDMessage.ForCornerTextbox("目标在其他地图区域，暂时无法指路。"));
                 this.monitor.Log(
                     $"Navigation target '{currentTarget.DisplayName}' is in a different world-map region; arrow paused.",
                     LogLevel.Debug
