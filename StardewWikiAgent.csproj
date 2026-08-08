@@ -8,9 +8,52 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <!-- Bundle third-party managed assemblies (sherpa-onnx, PortAudioSharp) into the mod folder. -->
+    <BundleExtraAssemblies>ThirdParty</BundleExtraAssemblies>
+    <!-- The per-platform runtimes/ tree is redundant once the macOS natives are flattened to the root. -->
+    <IgnoreModFilePatterns>^runtimes/</IgnoreModFilePatterns>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Pathoschild.Stardew.ModBuildConfig" Version="4.4.0" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.4" />
+    <PackageReference Include="PortAudioSharp2" Version="1.0.6" />
   </ItemGroup>
+
+  <!-- Bundle the local ASR model (downloaded into ./models, gitignored) into the mod's assets/asr folder. -->
+  <ItemGroup>
+    <None Include="models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01/model.int8.onnx"
+          Link="assets/asr/model.int8.onnx"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01/model.int8.onnx')" />
+    <None Include="models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01/tokens.txt"
+          Link="assets/asr/tokens.txt"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01/tokens.txt')" />
+  </ItemGroup>
+
+  <!--
+    Flatten the native libraries next to the mod DLL. Under SMAPI a mod has no runtime config that
+    probes runtimes/<rid>/native, so the native libraries must sit beside the managed assembly for
+    the DllImportResolver to find them. Runs before ModBuildConfig collects files to deploy.
+
+    The natives are picked by the BUILD host OS (build on Windows -> a Windows mod; build on macOS
+    -> a macOS mod). Stardew Valley is a 64-bit x64 process on both: on Apple Silicon it runs under
+    Rosetta 2, so macOS needs the osx-x64 binaries, not osx-arm64.
+  -->
+  <Target Name="FlattenNativeLibs" AfterTargets="Build" BeforeTargets="_CopyModFilesToGame;AfterBuild">
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+      <_NativeLibs Include="$(TargetDir)runtimes/osx-x64/native/*.dylib" />
+    </ItemGroup>
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+      <_NativeLibs Include="$(TargetDir)runtimes/win-x64/native/*.dll" />
+    </ItemGroup>
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+      <_NativeLibs Include="$(TargetDir)runtimes/linux-x64/native/*.so" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_NativeLibs)"
+          DestinationFolder="$(TargetDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_NativeLibs)' != ''" />
+  </Target>
 </Project>

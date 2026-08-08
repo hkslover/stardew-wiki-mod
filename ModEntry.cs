@@ -7,6 +7,7 @@ using StardewWikiAgent.Api;
 using StardewWikiAgent.Chat;
 using StardewWikiAgent.Config;
 using StardewWikiAgent.Game;
+using StardewWikiAgent.Speech;
 using StardewWikiAgent.Threading;
 using StardewWikiAgent.Wiki;
 
@@ -25,6 +26,8 @@ internal sealed class ModEntry : Mod
     private EasterEggGreeter? greeter;
     private NavigationService navigation = null!;
     private int navigationGeneration;
+    private VoiceInputController? voice;
+    private SButton voiceHotkey = SButton.V;
 
     public override void Entry(IModHelper helper)
     {
@@ -62,6 +65,10 @@ internal sealed class ModEntry : Mod
 
         this.greeter = new EasterEggGreeter(this.Monitor);
 
+        if (this.config.EnableVoiceInput)
+            this.InitializeVoiceAsync();
+
+        helper.Events.Input.ButtonPressed += this.OnButtonPressed;
         helper.Events.GameLoop.UpdateTicked += this.OnUpdateTicked;
         helper.Events.GameLoop.ReturnedToTitle += this.OnReturnedToTitle;
         helper.Events.GameLoop.SaveLoaded += this.OnSaveLoaded;
@@ -137,6 +144,12 @@ internal sealed class ModEntry : Mod
             return;
         }
 
+        this.StartAskRequest(question, chat);
+    }
+
+    /// <summary>Run the agent for a question and present the answer. Shared by the chat command and voice input.</summary>
+    private void StartAskRequest(string question, ChatBox chat)
+    {
         if (this.agent is null)
         {
             chat.addErrorMessage("AI 助手尚未初始化，请查看 SMAPI 日志。");
@@ -170,7 +183,7 @@ internal sealed class ModEntry : Mod
                     if (answer.NavigationTarget is not null
                         && navigationGeneration == Volatile.Read(ref this.navigationGeneration))
                         this.navigation.Start(answer.NavigationTarget);
-                    ChatAnswerPresenter.Show(chat, answer.Text);
+                    ChatAnswerPresenter.Show(chat, answer.Text, answer.Sources);
                 });
             }
             catch (OperationCanceledException) when (requestToken.IsCancellationRequested)
@@ -221,6 +234,115 @@ internal sealed class ModEntry : Mod
                 this.Monitor.Log("Console AI request failed: " + ex, LogLevel.Error);
             }
         });
+    }
+
+    /// <summary>Load the local speech model and open the microphone on a background thread.</summary>
+    private void InitializeVoiceAsync()
+    {
+        if (!Enum.TryParse(this.config.VoiceHotkey, ignoreCase: true, out SButton hotkey) || hotkey == SButton.None)
+        {
+            this.Monitor.Log($"Invalid VoiceHotkey '{this.config.VoiceHotkey}'; falling back to V.", LogLevel.Warn);
+            hotkey = SButton.V;
+        }
+        this.voiceHotkey = hotkey;
+
+        string assetDir = Path.Combine(this.Helper.DirectoryPath, "assets", "asr");
+        string modelPath = Path.Combine(assetDir, "model.int8.onnx");
+        string tokensPath = Path.Combine(assetDir, "tokens.txt");
+        if (!File.Exists(modelPath) || !File.Exists(tokensPath))
+        {
+            this.Monitor.Log(
+                "Voice input is enabled but the ASR model was not found in assets/asr; voice input is disabled.",
+                LogLevel.Warn
+            );
+            return;
+        }
+
+        // SMAPI's loader doesn't probe the mod folder for native libraries, so register a resolver
+        // that loads them from here. Pre-flight the load: if the native libs are missing we must not
+        // construct the recognizer at all — a failed constructor leaves a finalizable object whose
+        // finalizer re-enters native code and would crash the whole game.
+        NativeLibraryResolver.Register(this.Helper.DirectoryPath);
+        if (!NativeLibraryResolver.CanLoad("sherpa-onnx-c-api") || !NativeLibraryResolver.CanLoad("portaudio"))
+        {
+            this.Monitor.Log(
+                "Voice input native libraries could not be loaded from the mod folder; voice input is disabled.",
+                LogLevel.Warn
+            );
+            return;
+        }
+
+        int threads = this.config.VoiceNumThreads;
+        _ = Task.Run(() =>
+        {
+            SpeechTranscriber? transcriber = null;
+            VoiceRecorder? recorder = null;
+            try
+            {
+                transcriber = new SpeechTranscriber(modelPath, tokensPath, threads, this.Monitor);
+                recorder = new VoiceRecorder(SpeechTranscriber.SampleRate, this.config.VoiceMaxSeconds, this.Monitor);
+            }
+            catch (Exception ex)
+            {
+                this.Monitor.Log("Failed to initialize voice input: " + ex, LogLevel.Error);
+                transcriber?.Dispose();
+                recorder?.Dispose();
+                return;
+            }
+
+            SpeechTranscriber readyTranscriber = transcriber;
+            VoiceRecorder readyRecorder = recorder;
+            this.mainThread.Enqueue(() =>
+            {
+                if (!readyRecorder.IsAvailable)
+                {
+                    readyTranscriber.Dispose();
+                    readyRecorder.Dispose();
+                    return;
+                }
+
+                this.voice = new VoiceInputController(
+                    readyRecorder,
+                    readyTranscriber,
+                    this.mainThread,
+                    this.Monitor,
+                    this.voiceHotkey.ToString(),
+                    this.OnVoiceTranscribed
+                );
+                this.Monitor.Log(
+                    $"Voice input ready. Press {this.voiceHotkey} to start/stop recording (Chinese speech-to-text).",
+                    LogLevel.Info
+                );
+            });
+        });
+    }
+
+    /// <summary>Called on the main thread with recognized text; routes it through the normal ask flow.</summary>
+    private void OnVoiceTranscribed(string question)
+    {
+        ChatBox? chat = Game1.chatBox;
+        if (chat is null)
+            return;
+
+        chat.addInfoMessage("[语音] " + question);
+        this.StartAskRequest(question, chat);
+    }
+
+    private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
+    {
+        if (this.voice is null || !this.voice.IsAvailable || e.Button != this.voiceHotkey)
+            return;
+
+        // Never hijack the key while the player is typing into the chat box.
+        if (Game1.chatBox is { } chatBox && chatBox.isActive())
+            return;
+
+        // Starting requires a free player; stopping an in-progress recording is always allowed.
+        if (!this.voice.IsRecording && !Context.IsPlayerFree)
+            return;
+
+        this.Helper.Input.Suppress(e.Button);
+        this.voice.Toggle();
     }
 
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)

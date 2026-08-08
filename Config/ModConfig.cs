@@ -16,6 +16,13 @@ public sealed class ModConfig
     public bool IncludeGameContext { get; set; } = true;
     public bool EnableQuestLogTool { get; set; } = true;
 
+    // Voice input (push-to-talk): press the hotkey once to start recording, again to stop
+    // and transcribe locally, then the recognized text is sent through the normal ask flow.
+    public bool EnableVoiceInput { get; set; } = true;
+    public string VoiceHotkey { get; set; } = "V";
+    public int VoiceMaxSeconds { get; set; } = 30;
+    public int VoiceNumThreads { get; set; } = 2;
+
     internal void Validate(IMonitor monitor)
     {
         if (this.RequestTimeoutSeconds is < 5 or > 300)
@@ -37,6 +44,16 @@ public sealed class ModConfig
         {
             monitor.Log("MaxResponseTokens must be between 256 and 8192; using 2048.", LogLevel.Warn);
             this.MaxResponseTokens = 2048;
+        }
+        if (this.VoiceMaxSeconds is < 3 or > 120)
+        {
+            monitor.Log("VoiceMaxSeconds must be between 3 and 120; using 30.", LogLevel.Warn);
+            this.VoiceMaxSeconds = 30;
+        }
+        if (this.VoiceNumThreads is < 1 or > 8)
+        {
+            monitor.Log("VoiceNumThreads must be between 1 and 8; using 2.", LogLevel.Warn);
+            this.VoiceNumThreads = 2;
         }
     }
 }

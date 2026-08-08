@@ -6,5 +6,8 @@ obj/
 config.json
 
 # ASR model for voice input is vendored in the repo (~25MB) so a clone builds without a
-# separate download; ignore only the source archive it was extracted from.
+# separate download. Only model.int8.onnx + tokens.txt are tracked; ignore the rest
+# (source archive, unused bbpe vocab, and sample wavs).
 models/*.tar.bz2
+models/**/bbpe.model
+models/**/test_wavs/
