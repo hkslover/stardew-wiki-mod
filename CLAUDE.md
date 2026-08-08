@@ -19,7 +19,7 @@ NUGET_PACKAGES="$PWD/.nuget-packages" \
 /usr/local/share/dotnet/dotnet build StardewWikiAgent.csproj
 ```
 
-`Pathoschild.Stardew.ModBuildConfig` (the only NuGet dependency) resolves the SMAPI/Stardew reference assemblies and, on build, auto-deploys the DLL + `manifest.json` into the game's `Mods/StardewWikiAgent` folder and produces a release zip. There is no separate test project — verification is manual, in-game (see below).
+`Pathoschild.Stardew.ModBuildConfig` resolves the SMAPI/Stardew reference assemblies and, on build, auto-deploys the DLL + `manifest.json` into the game's `Mods/StardewWikiAgent` folder and produces a release zip. The project also depends on the official `OpenAI` .NET SDK and the local-ASR packages; system and third-party transitive assemblies are bundled into the mod zip. There is no separate test project — verification is manual, in-game (see below).
 
 ## Running & diagnostics
 
@@ -37,7 +37,7 @@ The request flow, thread-by-thread, is the key thing to understand — SMAPI gam
 
 1. `ModEntry.HandleAsk` (main thread) captures a `GameContextSnapshot` synchronously, gates concurrent requests with a `SemaphoreSlim` (one at a time), then offloads to `Task.Run`.
 2. `AgentRunner.AskAsync` (background) runs the tool-calling loop: builds messages (system prompt + user question + optional game context), then loops up to `MaxAgentSteps`. First step forces `tool_choice=required` (with a fallback to `auto` if the endpoint 400/404s), later steps use `auto`. Each assistant `tool_calls` entry is executed and the result appended as a `tool` message. The loop ends when the model returns content with no tool calls.
-3. `OpenAiCompatibleClient` does the raw `POST /chat/completions`. It uses `HttpClient` with an infinite client-level timeout; the real deadline is a linked `CancellationTokenSource` in `AgentRunner` (`RequestTimeout`). Non-2xx throws `LlmHttpException` (carries the status code, used for the tool_choice fallback).
+3. `OpenAiCompatibleClient` uses the official OpenAI .NET SDK's typed `ChatClient`, messages, tools, completions, and usage models. `OpenAIClientOptions.Endpoint` supplies the configured compatible base URL. DeepSeek V4-only fields (`max_tokens`, `thinking`, `reasoning_effort`, and replayed `reasoning_content`) use the SDK's JSON patch extension; standard OpenAI requests use `MaxOutputTokenCount`. The SDK's network timeout is infinite because the real deadline is a linked `CancellationTokenSource` in `AgentRunner` (`RequestTimeout`). Non-2xx SDK failures are wrapped in `LlmHttpException` (carries the status code, used for the `tool_choice` fallback).
 4. Results marshal back to the main thread via `MainThreadDispatcher`, which is drained in `OnUpdateTicked` (8 callbacks/tick). `ChatAnswerPresenter` runs the answer through `MarkdownChatFormatter` (strips Markdown, colors lines: green body / gold emphasis / cyan sources, inline `**bold**` → 【…】 since the chat box is one-color-per-line) and prints to the `ChatBox`, then pops a `HUDMessage.ForCornerTextbox` so a slow/faded answer isn't missed.
 
 ### Tools and the read-only guarantee
@@ -57,7 +57,7 @@ Built-in tools: `wiki_search` + `wiki_read` (`Wiki/`, `BackgroundReadOnly`, via 
 
 ### Source layout
 
-`Api/` public contracts · `Agent/` LLM loop, tool registry, HTTP client · `Wiki/` MediaWiki client + wiki tools · `Game/` context snapshot + live-state tools + easter-egg greeter · `Chat/` chat output formatting + Markdown-to-color · `Threading/` main-thread dispatcher · `Config/` config + resolved settings · `ModEntry.cs` entry point & command wiring.
+`Api/` public contracts · `Agent/` LLM loop, tool registry, OpenAI SDK adapter · `Wiki/` MediaWiki client + wiki tools · `Game/` context snapshot + live-state tools + easter-egg greeter · `Chat/` chat output formatting + Markdown-to-color · `Threading/` main-thread dispatcher · `Config/` config + resolved settings · `ModEntry.cs` entry point & command wiring.
 
 There is also a private easter egg (`Game/EasterEggGreeter.cs` + `SteamIdentity.cs`): on `DayStarted` / evening `TimeChanged` (18:00) it shows a warm HUD greeting, but only for one **hardcoded** SteamID64 (`TargetSteamId` in `EasterEggGreeter`) — no config, no-op for everyone else. The Steam ID is read best-effort by reflecting into the game's `Steamworks.NET` assembly, so it silently no-ops on non-Steam builds.
 
