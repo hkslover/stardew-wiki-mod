@@ -14,7 +14,7 @@ internal static class ChatAnswerPresenter
 
         // The chat box auto-fades when closed, so the answer can slip past unnoticed.
         // A corner HUD message persists longer and nudges the player to press T to re-read.
-        Game1.addHUDMessage(HUDMessage.ForCornerTextbox("AI 回答已就绪，按 T 查看聊天框"));
+        Game1.addHUDMessage(HUDMessage.ForCornerTextbox("回答已就绪，按 T 查看聊天框"));
     }
 
     public static void ShowError(ChatBox chat, string message)

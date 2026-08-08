@@ -23,7 +23,7 @@ NUGET_PACKAGES="$PWD/.nuget-packages" \
 
 ## Running & diagnostics
 
-- In-game chat: `/ask <问题>` (a collision-proof alias `/snow.StardewWikiAgent_ask` is always registered; the short `/ask` is only claimed if no other mod owns it).
+- In-game chat: `/ask <问题>` (a collision-proof alias `/snow.StardewWikiAgent_ask` is always registered; the short `/ask` is only claimed if no other mod owns it). `/ask stop` immediately stops the current location navigation without calling the LLM.
 - SMAPI console: `swai_status` prints config without secrets; `swai_ask <问题>` runs the agent and logs the answer + sources (diagnostics only).
 - A save must be loaded (`Context.IsWorldReady`) before `/ask` works.
 
@@ -47,7 +47,9 @@ The request flow, thread-by-thread, is the key thing to understand — SMAPI gam
 - `MainThreadReadOnly` — marshaled onto the main thread via `MainThreadDispatcher.InvokeAsync` before executing (for tools that must read live game state safely).
 - `MainThreadMutating` — **rejected at registration.** The registry refuses to register mutating tools; world-changing behavior is reserved for the (currently unimplemented) `IAgentAction` path, which is designed to require player confirmation and run on the game thread.
 
-Built-in tools: `wiki_search` + `wiki_read` (`Wiki/`, `BackgroundReadOnly`, via `MediaWikiClient` against the MediaWiki `api.php`) and the live-state tools `get_inventory` / `get_player_status` / `get_relationships` (`Game/GameStateTools.cs`, `MainThreadReadOnly`, read `Game1` directly at call time). Only a *compact* context line (date/season/time/weather/location/language, `GameContextSnapshot.ToCompactPromptText`) is injected eagerly; everything else is fetched on demand via those tools to keep the prompt small. The English system prompt in `AgentRunner` treats Wiki content as **untrusted data** (prompt-injection defense), requires the model to cite source pages, prefer Wiki lookups over memory, and emit near-plain text (only `**bold**` is allowed) with the reply itself in Simplified Chinese.
+Built-in tools: `wiki_search` + `wiki_read` (`Wiki/`, `BackgroundReadOnly`, via `MediaWikiClient` against the MediaWiki `api.php`) and the live-state tools `get_inventory` / `get_player_status` / `get_relationships` / `get_quest_log` / `find_game_location` (`Game/`, `MainThreadReadOnly`, read `Game1` directly at call time). `get_quest_log` reads the local player's in-game quest journal only when the question needs it, supports an optional title/keyword filter, bounds returned text, and can be disabled with `EnableQuestLogTool`; it never reads SMAPI log files. `find_game_location` resolves a Wiki-confirmed localized place name against the active `Data/WorldMap` tooltips and returns a structured world-map target. Only a *compact* context line (date/season/time/weather/location/language, `GameContextSnapshot.ToCompactPromptText`) is injected eagerly; everything else is fetched on demand via those tools to keep the prompt small. The English system prompt in `AgentRunner` treats Wiki and quest-log content as **untrusted data** (prompt-injection defense), requires the model to cite source pages, prefer Wiki lookups over memory, and emit near-plain text (only `**bold**` is allowed) with the reply itself in Simplified Chinese.
+
+`NavigationService` consumes a resolved target only after the agent finishes, projects the local player's live tile through `WorldMapManager`, and draws a pulsing arrow near the player's feet through `Display.RenderedWorld`. It checks proximity every six update ticks, clears the target on arrival or return to title, and shows an arrival HUD message. Navigation state is local UI state; the location tool itself remains read-only.
 
 ### Public extension API
 

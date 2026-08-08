@@ -23,6 +23,8 @@ internal sealed class ModEntry : Mod
     private AgentToolRegistry? tools;
     private IStardewWikiAgentApi? api;
     private EasterEggGreeter? greeter;
+    private NavigationService navigation = null!;
+    private int navigationGeneration;
 
     public override void Entry(IModHelper helper)
     {
@@ -38,9 +40,13 @@ internal sealed class ModEntry : Mod
         this.tools.Register(new InventoryTool());
         this.tools.Register(new PlayerStatusTool());
         this.tools.Register(new RelationshipsTool());
+        if (this.config.EnableQuestLogTool)
+            this.tools.Register(new QuestLogTool());
+        this.tools.Register(new WorldMapLocationTool());
 
         this.agent = new AgentRunner(settings, this.tools, this.Monitor);
         this.api = new StardewWikiAgentApi(this.agent, this.tools, this.mainThread);
+        this.navigation = new NavigationService(this.Monitor);
 
         this.RegisterChatCommand();
         helper.ConsoleCommands.Add(
@@ -61,6 +67,7 @@ internal sealed class ModEntry : Mod
         helper.Events.GameLoop.SaveLoaded += this.OnSaveLoaded;
         helper.Events.GameLoop.DayStarted += this.greeter.OnDayStarted;
         helper.Events.GameLoop.TimeChanged += this.greeter.OnTimeChanged;
+        helper.Events.Display.RenderedWorld += this.navigation.Render;
 
         this.Monitor.Log(
             $"Loaded AI agent core (model: {settings.Model}, Wiki: {settings.WikiApiUrl}). " +
@@ -122,6 +129,14 @@ internal sealed class ModEntry : Mod
             return;
         }
 
+        if (question.Equals("stop", StringComparison.OrdinalIgnoreCase))
+        {
+            Interlocked.Increment(ref this.navigationGeneration);
+            bool stopped = this.navigation.Stop();
+            chat.addInfoMessage(stopped ? "已停止当前导航。" : "当前没有正在进行的导航。");
+            return;
+        }
+
         if (this.agent is null)
         {
             chat.addErrorMessage("AI 助手尚未初始化，请查看 SMAPI 日志。");
@@ -141,7 +156,8 @@ internal sealed class ModEntry : Mod
         }
 
         GameContextSnapshot context = GameContextSnapshot.Capture();
-        chat.addInfoMessage("正在检索wiki…");
+        int navigationGeneration = Volatile.Read(ref this.navigationGeneration);
+        chat.addInfoMessage("正在分析并检索 Wiki…");
         CancellationToken requestToken = this.requestCancellation.Token;
 
         _ = Task.Run(async () =>
@@ -149,7 +165,13 @@ internal sealed class ModEntry : Mod
             try
             {
                 AgentAnswer answer = await this.agent.AskAsync(question, context, requestToken);
-                this.mainThread.Enqueue(() => ChatAnswerPresenter.Show(chat, answer.Text));
+                this.mainThread.Enqueue(() =>
+                {
+                    if (answer.NavigationTarget is not null
+                        && navigationGeneration == Volatile.Read(ref this.navigationGeneration))
+                        this.navigation.Start(answer.NavigationTarget);
+                    ChatAnswerPresenter.Show(chat, answer.Text);
+                });
             }
             catch (OperationCanceledException) when (requestToken.IsCancellationRequested)
             {
@@ -204,6 +226,7 @@ internal sealed class ModEntry : Mod
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
     {
         this.mainThread.Drain(8);
+        this.navigation.Update(e);
     }
 
     private void OnSaveLoaded(object? sender, SaveLoadedEventArgs e)
@@ -213,6 +236,9 @@ internal sealed class ModEntry : Mod
 
     private void OnReturnedToTitle(object? sender, ReturnedToTitleEventArgs e)
     {
+        Interlocked.Increment(ref this.navigationGeneration);
+        this.navigation.Stop();
+        this.navigation.Dispose();
         this.requestCancellation.Cancel();
         this.requestCancellation.Dispose();
         this.requestCancellation = new CancellationTokenSource();
@@ -224,7 +250,8 @@ internal sealed class ModEntry : Mod
     {
         this.Monitor.Log(
             $"Configured={settings.IsConfigured}; Model={settings.Model}; " +
-            $"BaseUrl={settings.BaseUrl}; WikiApi={settings.WikiApiUrl}",
+            $"BaseUrl={settings.BaseUrl}; WikiApi={settings.WikiApiUrl}; " +
+            $"QuestLogTool={this.config.EnableQuestLogTool}",
             LogLevel.Info
         );
     }

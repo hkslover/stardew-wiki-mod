@@ -13,6 +13,7 @@ public sealed class ModConfig
     public int MaxAgentSteps { get; set; } = 6;
     public int MaxAnswerCharacters { get; set; } = 1800;
     public bool IncludeGameContext { get; set; } = true;
+    public bool EnableQuestLogTool { get; set; } = true;
 
     internal void Validate(IMonitor monitor)
     {

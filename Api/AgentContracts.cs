@@ -50,4 +50,5 @@ public sealed class AgentAnswer
 {
     public string Text { get; init; } = "";
     public IReadOnlyList<string> Sources { get; init; } = Array.Empty<string>();
+    internal NavigationTarget? NavigationTarget { get; init; }
 }

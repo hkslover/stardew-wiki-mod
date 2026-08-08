@@ -15,9 +15,8 @@ internal sealed class EasterEggGreeter
     private const int EveningTime = 1800;
 
     /// <summary>The only SteamID64 that ever sees this easter egg.</summary>
-    // private const ulong TargetSteamId = 76561199821457254UL;
-    /// test account: 76561198821457254
-    private const ulong TargetSteamId = 76561198799057771UL;
+    private const ulong TargetSteamId = 76561199821457254UL;
+    // private const ulong TargetSteamId = 76561198799057771UL;
 
     /// <summary>The only in-game farmer name that ever sees this easter egg.</summary>
     private const string TargetName = "冬哥";
