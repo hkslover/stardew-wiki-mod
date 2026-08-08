@@ -4,3 +4,7 @@ obj/
 .nuget-packages/
 .DS_Store
 config.json
+
+# ASR model for voice input is vendored in the repo (~25MB) so a clone builds without a
+# separate download; ignore only the source archive it was extracted from.
+models/*.tar.bz2
