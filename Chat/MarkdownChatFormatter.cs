@@ -19,6 +19,16 @@ internal static class MarkdownChatFormatter
     public static readonly Color Source = new(120, 200, 255);     // cyan — source / link lines
     public static readonly Color Error = new(255, 120, 100);      // red — errors
 
+    private static readonly Regex HeadingRegex = new(@"^#{1,6}\s+(.*)$", RegexOptions.Compiled);
+    private static readonly Regex SourceLineRegex = new(@"^\**\s*(来源|来源页面|参考|Sources?)\s*[:：]", RegexOptions.Compiled);
+    private static readonly Regex UrlLineRegex = new(@"^https?://", RegexOptions.Compiled);
+    private static readonly Regex BulletRegex = new(@"^(?:[-*+]|\d+[.)])\s+(.*)$", RegexOptions.Compiled);
+    private static readonly Regex WholeBoldRegex = new(@"^\*\*(.+?)\*\*[:：]?$", RegexOptions.Compiled);
+    private static readonly Regex BoldRegex = new(@"\*\*(.+?)\*\*", RegexOptions.Compiled);
+    private static readonly Regex ItalicRegex = new(@"(?<!\*)\*(?!\*)([^*]+?)\*(?!\*)", RegexOptions.Compiled);
+    private static readonly Regex CodeRegex = new(@"`([^`]+)`", RegexOptions.Compiled);
+    private static readonly Regex LinkRegex = new(@"\[([^\]]+)\]\([^)]+\)", RegexOptions.Compiled);
+
     public static IEnumerable<ChatLine> Format(string answer, int maxLineLength)
     {
         string normalized = (answer ?? "").Replace("\r\n", "\n").Trim();
@@ -45,27 +55,27 @@ internal static class MarkdownChatFormatter
 
     private static string FormatLine(string line, out Color color)
     {
-        Match heading = Regex.Match(line, @"^#{1,6}\s+(.*)$");
+        Match heading = HeadingRegex.Match(line);
         if (heading.Success)
         {
             color = Highlight;
             return StripInline(heading.Groups[1].Value);
         }
 
-        if (Regex.IsMatch(line, @"^\**\s*(来源|来源页面|参考|Sources?)\s*[:：]") || Regex.IsMatch(line, @"^https?://"))
+        if (SourceLineRegex.IsMatch(line) || UrlLineRegex.IsMatch(line))
         {
             color = Source;
             return StripInline(line);
         }
 
-        Match bullet = Regex.Match(line, @"^(?:[-*+]|\d+[.)])\s+(.*)$");
+        Match bullet = BulletRegex.Match(line);
         if (bullet.Success)
         {
             color = Answer;
             return "・" + StripInline(bullet.Groups[1].Value);
         }
 
-        Match wholeBold = Regex.Match(line, @"^\*\*(.+?)\*\*[:：]?$");
+        Match wholeBold = WholeBoldRegex.Match(line);
         if (wholeBold.Success)
         {
             color = Highlight;
@@ -79,10 +89,10 @@ internal static class MarkdownChatFormatter
     /// <summary>Strip inline Markdown. Bold becomes 【…】 because the chat box can't recolor mid-line.</summary>
     private static string StripInline(string text)
     {
-        text = Regex.Replace(text, @"\*\*(.+?)\*\*", "【$1】");                 // **bold** -> 【bold】
-        text = Regex.Replace(text, @"(?<!\*)\*(?!\*)([^*]+?)\*(?!\*)", "$1");   // *italic* -> italic
-        text = Regex.Replace(text, @"`([^`]+)`", "$1");                          // `code` -> code
-        text = Regex.Replace(text, @"\[([^\]]+)\]\([^)]+\)", "$1");              // [text](url) -> text
+        text = BoldRegex.Replace(text, "【$1】");        // **bold** -> 【bold】
+        text = ItalicRegex.Replace(text, "$1");          // *italic* -> italic
+        text = CodeRegex.Replace(text, "$1");            // `code` -> code
+        text = LinkRegex.Replace(text, "$1");            // [text](url) -> text
         text = text.Replace("**", "").Replace("`", "");                          // any stragglers
         return text.Trim();
     }

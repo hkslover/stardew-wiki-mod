@@ -32,10 +32,22 @@ internal sealed class OpenAiCompatibleClient
             ["model"] = this.settings.Model,
             ["messages"] = messages,
             ["tools"] = tools,
-            ["tool_choice"] = toolChoice,
-            ["temperature"] = 0.2,
             ["max_tokens"] = this.settings.MaxAnswerCharacters
         };
+        if (this.settings.IsDeepSeekV4)
+        {
+            // DeepSeek V4 thinking mode defaults to high, but send both values
+            // explicitly so the behavior is stable across compatible gateways.
+            payload["thinking"] = new Dictionary<string, object?> { ["type"] = "enabled" };
+            payload["reasoning_effort"] = "high";
+            // DeepSeek V4 thinking-mode integrations may reject tool_choice;
+            // omitting it leaves the API's tool selection at auto.
+        }
+        else
+        {
+            payload["tool_choice"] = toolChoice;
+            payload["temperature"] = 0.2;
+        }
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
             Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")

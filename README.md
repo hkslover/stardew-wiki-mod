@@ -17,6 +17,8 @@
 
 首次运行会生成 `config.json`。填写 `BaseUrl`、`Model` 和需要时的 `ApiKey`，也可以使用环境变量 `OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_API_KEY`。
 
+使用 DeepSeek V4 Flash 时，将 `BaseUrl` 设置为 `https://api.deepseek.com`、`Model` 设置为 `deepseek-v4-flash`，并填写 DeepSeek API Key。Mod 会显式启用思考模式并使用 `high` 思考等级；带 Wiki 工具调用时也会保留 DeepSeek 要求的 `reasoning_content`。
+
 `EnableQuestLogTool` 默认为 `true`。关闭后，任务日志读取工具不会注册，任务内容也不会发送给所配置的 AI 服务。任务日志只在问题确实涉及当前任务时按需读取，不会读取 SMAPI 调试日志或磁盘文件。
 
 例如可询问：`/ask 日志里的“认识法师”下一步要去哪？`。AI 会先核对当前任务目标，再查询 Wiki；能够唯一定位目的地时会同时启动方向箭头。
