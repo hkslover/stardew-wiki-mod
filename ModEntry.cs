@@ -33,9 +33,8 @@ internal sealed class ModEntry : Mod
     {
         this.mainThread = new MainThreadDispatcher(this.Monitor);
         this.config = helper.ReadConfig<ModConfig>();
-        helper.WriteConfig(this.config);
-
         var settings = AgentSettings.From(this.config, this.Monitor);
+        helper.WriteConfig(this.config);
         var wiki = new MediaWikiClient(settings.WikiApiUrl, settings.RequestTimeout);
         this.tools = new AgentToolRegistry(this.Monitor, this.mainThread);
         this.tools.Register(new WikiSearchTool(wiki));

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using OpenAI.Chat;
 using StardewModdingAPI;
 using StardewWikiAgent.Api;
 using StardewWikiAgent.Config;
@@ -53,23 +54,21 @@ internal sealed class AgentRunner
         bool sawLocationResult = false;
         bool sawSuccessfulWikiRead = false;
         bool lengthToolRetrySent = false;
-        var messages = new List<Dictionary<string, object?>>
+        var messages = new List<ChatMessage>
         {
-            new() { ["role"] = "system", ["content"] = SystemPrompt },
-            new()
-            {
-                ["role"] = "user",
-                ["content"] = this.settings.IncludeGameContext
+            new SystemChatMessage(SystemPrompt),
+            new UserChatMessage(
+                this.settings.IncludeGameContext
                     ? $"Player question: {question}\nCurrent game context (basic time/place info only; call the matching tool for inventory/skills/relationships/etc.): {context.ToCompactPromptText()}"
                     : question
-            }
+            )
         };
         var sources = new List<string>();
         NavigationTarget? navigationTarget = null;
 
         // The tool set is stable for the duration of a request; build the OpenAI
         // definitions once instead of re-parsing every tool's schema on each step.
-        IReadOnlyList<object> toolDefinitions = this.tools.OpenAiDefinitions();
+        IReadOnlyList<ChatTool> toolDefinitions = this.tools.OpenAiDefinitions();
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(this.settings.RequestTimeout);
@@ -81,15 +80,13 @@ internal sealed class AgentRunner
             // synthesize a reply from whatever Wiki content it already gathered.
             bool finalStep = step == this.settings.MaxAgentSteps - 1;
             if (finalStep)
-                messages.Add(new Dictionary<string, object?>
-                {
-                    ["role"] = "system",
-                    ["content"] = "The tool-call budget for this query is exhausted. Answer now, directly, using only the information already gathered — do NOT call any more tools. Reply in Simplified Chinese. If you cited pages, put their zh.stardewvalleywiki.com URLs on the final line starting with \"来源：\". If the information is insufficient, clearly say you cannot confirm."
-                });
+                messages.Add(new SystemChatMessage(
+                    "The tool-call budget for this query is exhausted. Answer now, directly, using only the information already gathered — do NOT call any more tools. Reply in Simplified Chinese. If you cited pages, put their zh.stardewvalleywiki.com URLs on the final line starting with \"来源：\". If the information is insufficient, clearly say you cannot confirm."
+                ));
 
-            IReadOnlyList<object> stepTools = finalStep ? Array.Empty<object>() : toolDefinitions;
+            IReadOnlyList<ChatTool> stepTools = finalStep ? Array.Empty<ChatTool>() : toolDefinitions;
             string toolChoice = step == 0 ? "required" : "auto";
-            JsonDocument response;
+            ChatCompletion response;
             try
             {
                 response = await this.client.CompleteAsync(messages, stepTools, toolChoice, timeout.Token, requestId);
@@ -100,157 +97,132 @@ internal sealed class AgentRunner
                 response = await this.client.CompleteAsync(messages, stepTools, "auto", timeout.Token, requestId);
             }
 
-            using (response)
+            string finishReason = response.FinishReason.ToString();
+            this.monitor.Log(
+                $"[{requestId}] Step {step + 1} finish_reason={finishReason}.",
+                LogLevel.Debug
+            );
+            string content = string.Concat(response.Content.Select(part => part.Text));
+            IReadOnlyList<ChatToolCall> toolCalls = response.ToolCalls;
+            bool hasToolCalls = toolCalls.Count > 0;
+
+            if (response.FinishReason == ChatFinishReason.ContentFilter)
             {
-                JsonElement choice = response.RootElement.GetProperty("choices")[0];
-                JsonElement message = choice.GetProperty("message");
-                string? finishReason = choice.TryGetProperty("finish_reason", out JsonElement finishReasonElement)
-                    && finishReasonElement.ValueKind == JsonValueKind.String
-                        ? finishReasonElement.GetString()
-                        : null;
+                this.monitor.Log($"[{requestId}] LLM response was blocked by content filtering.", LogLevel.Warn);
+                return new AgentAnswer
+                {
+                    Text = "回答被内容过滤，请换一种问法。",
+                    Sources = sources.ToArray(),
+                    NavigationTarget = navigationTarget
+                };
+            }
+
+            if (response.FinishReason == ChatFinishReason.Length && hasToolCalls)
+            {
+                if (!lengthToolRetrySent)
+                {
+                    lengthToolRetrySent = true;
+                    this.monitor.Log($"[{requestId}] Truncated tool call discarded; requesting one complete retry.", LogLevel.Warn);
+                    messages.Add(new SystemChatMessage("Your previous reply was cut off. Repeat the tool call(s) completely."));
+                    continue;
+                }
+
+                this.monitor.Log($"[{requestId}] Tool call was still truncated after one retry.", LogLevel.Warn);
+                return new AgentAnswer
+                {
+                    Text = "模型的工具调用内容被截断，请换一种问法重试。",
+                    Sources = sources.ToArray(),
+                    NavigationTarget = navigationTarget
+                };
+            }
+            else if (response.FinishReason == ChatFinishReason.Length)
+            {
+                this.monitor.Log($"[{requestId}] Returning a text answer truncated by the model token limit.", LogLevel.Warn);
+                return new AgentAnswer
+                {
+                    Text = string.IsNullOrWhiteSpace(content)
+                        ? "模型输出达到 token 上限，未能生成正文，请重试或适当提高 MaxResponseTokens。"
+                        : Limit(content),
+                    Sources = sources.ToArray(),
+                    NavigationTarget = navigationTarget
+                };
+            }
+
+            var assistant = new AssistantChatMessage(response);
+#pragma warning disable SCME0001 // Preserve DeepSeek's provider-specific reasoning_content between tool rounds.
+            if (this.settings.IsDeepSeekV4
+                && response.Patch.TryGetValue("$.choices[0].message.reasoning_content"u8, out string? reasoningContent)
+                && reasoningContent is not null)
+                assistant.Patch.Set("$.reasoning_content"u8, reasoningContent);
+#pragma warning restore SCME0001
+            messages.Add(assistant);
+
+            if (!hasToolCalls)
+            {
+                string? correction = finalStep
+                    ? null
+                    : answerPolicy.GetCorrection(sawLocationResult, sawSuccessfulWikiRead);
+                if (correction is not null)
+                {
+                    this.monitor.Log($"[{requestId}] Step {step + 1}: answer policy requested another tool round.", LogLevel.Debug);
+                    messages.Add(new SystemChatMessage(correction));
+                    continue;
+                }
+
+                return new AgentAnswer
+                {
+                    Text = Limit(content),
+                    Sources = sources.ToArray(),
+                    NavigationTarget = navigationTarget
+                };
+            }
+
+            var pendingCalls = new List<PendingToolCall>();
+            int callIndex = 0;
+            foreach (ChatToolCall call in toolCalls)
+            {
+                string id = call.Id ?? Guid.NewGuid().ToString("N");
+                string name = call.FunctionName ?? "";
+                string arguments = call.FunctionArguments?.ToString() ?? "{}";
+                ToolExecutionAffinity affinity = this.tools.TryGetAffinity(name, out ToolExecutionAffinity registeredAffinity)
+                    ? registeredAffinity
+                    : ToolExecutionAffinity.MainThreadReadOnly;
+                pendingCalls.Add(new PendingToolCall(callIndex++, id, name, arguments, affinity));
+            }
+
+            var executions = new ToolCallExecution?[pendingCalls.Count];
+            Task<ToolCallExecution>[] backgroundTasks = pendingCalls
+                .Where(call => call.Affinity == ToolExecutionAffinity.BackgroundReadOnly)
+                .Select(call => this.ExecuteToolCallAsync(call, context, timeout.Token, requestId))
+                .ToArray();
+            Task<ToolCallExecution[]> backgroundExecutions = Task.WhenAll(backgroundTasks);
+
+            foreach (PendingToolCall call in pendingCalls.Where(call => call.Affinity != ToolExecutionAffinity.BackgroundReadOnly))
+                executions[call.Index] = await this.ExecuteToolCallAsync(call, context, timeout.Token, requestId);
+
+            foreach (ToolCallExecution execution in await backgroundExecutions)
+                executions[execution.Call.Index] = execution;
+
+            foreach (PendingToolCall call in pendingCalls)
+            {
+                ToolCallExecution execution = executions[call.Index]
+                    ?? throw new InvalidOperationException("A tool call completed without a result.");
+                string result = execution.Result;
+                ToolResultInspection inspection = ToolResultEnvelope.Inspect(result);
                 this.monitor.Log(
-                    $"[{requestId}] Step {step + 1} finish_reason={finishReason ?? "null"}.",
+                    $"[{requestId}] Step {step + 1} tool={call.Name} args={Summarize(call.Arguments, 200)} " +
+                    $"elapsedMs={execution.ElapsedMilliseconds} status={inspection.LogStatus}.",
                     LogLevel.Debug
                 );
-                string content = message.TryGetProperty("content", out JsonElement contentElement)
-                    && contentElement.ValueKind == JsonValueKind.String
-                    ? contentElement.GetString() ?? ""
-                    : "";
-                JsonElement toolCalls = message.TryGetProperty("tool_calls", out JsonElement calls) ? calls : default;
-                bool hasToolCalls = toolCalls.ValueKind == JsonValueKind.Array && toolCalls.GetArrayLength() > 0;
-
-                if (string.Equals(finishReason, "content_filter", StringComparison.OrdinalIgnoreCase))
-                {
-                    this.monitor.Log($"[{requestId}] LLM response was blocked by content filtering.", LogLevel.Warn);
-                    return new AgentAnswer
-                    {
-                        Text = "回答被内容过滤，请换一种问法。",
-                        Sources = sources.ToArray(),
-                        NavigationTarget = navigationTarget
-                    };
-                }
-
-                if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase) && hasToolCalls)
-                {
-                    if (!lengthToolRetrySent)
-                    {
-                        lengthToolRetrySent = true;
-                        this.monitor.Log($"[{requestId}] Truncated tool call discarded; requesting one complete retry.", LogLevel.Warn);
-                        messages.Add(new Dictionary<string, object?>
-                        {
-                            ["role"] = "system",
-                            ["content"] = "Your previous reply was cut off. Repeat the tool call(s) completely."
-                        });
-                        continue;
-                    }
-
-                    this.monitor.Log($"[{requestId}] Tool call was still truncated after one retry.", LogLevel.Warn);
-                    return new AgentAnswer
-                    {
-                        Text = "模型的工具调用内容被截断，请换一种问法重试。",
-                        Sources = sources.ToArray(),
-                        NavigationTarget = navigationTarget
-                    };
-                }
-                else if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase))
-                {
-                    this.monitor.Log($"[{requestId}] Returning a text answer truncated by the model token limit.", LogLevel.Warn);
-                    return new AgentAnswer
-                    {
-                        Text = Limit(content),
-                        Sources = sources.ToArray(),
-                        NavigationTarget = navigationTarget
-                    };
-                }
-
-                var assistant = new Dictionary<string, object?> { ["role"] = "assistant", ["content"] = content };
-                if (message.TryGetProperty("reasoning_content", out JsonElement reasoningContent))
-                    assistant["reasoning_content"] = reasoningContent.ValueKind == JsonValueKind.String
-                        ? reasoningContent.GetString()
-                        : null;
-                if (hasToolCalls)
-                    assistant["tool_calls"] = JsonSerializer.Deserialize<object>(toolCalls.GetRawText());
-                messages.Add(assistant);
-
-                if (!hasToolCalls)
-                {
-                    string? correction = finalStep
-                        ? null
-                        : answerPolicy.GetCorrection(sawLocationResult, sawSuccessfulWikiRead);
-                    if (correction is not null)
-                    {
-                        this.monitor.Log($"[{requestId}] Step {step + 1}: answer policy requested another tool round.", LogLevel.Debug);
-                        messages.Add(new Dictionary<string, object?>
-                        {
-                            ["role"] = "system",
-                            ["content"] = correction
-                        });
-                        continue;
-                    }
-
-                    return new AgentAnswer
-                    {
-                        Text = Limit(content),
-                        Sources = sources.ToArray(),
-                        NavigationTarget = navigationTarget
-                    };
-                }
-
-                var pendingCalls = new List<PendingToolCall>();
-                int callIndex = 0;
-                foreach (JsonElement call in toolCalls.EnumerateArray())
-                {
-                    string id = call.GetProperty("id").GetString() ?? Guid.NewGuid().ToString("N");
-                    JsonElement function = call.GetProperty("function");
-                    string name = function.GetProperty("name").GetString() ?? "";
-                    string arguments = function.TryGetProperty("arguments", out JsonElement argumentElement)
-                        ? argumentElement.GetString() ?? "{}"
-                        : "{}";
-                    ToolExecutionAffinity affinity = this.tools.TryGetAffinity(name, out ToolExecutionAffinity registeredAffinity)
-                        ? registeredAffinity
-                        : ToolExecutionAffinity.MainThreadReadOnly;
-                    pendingCalls.Add(new PendingToolCall(callIndex++, id, name, arguments, affinity));
-                }
-
-                var executions = new ToolCallExecution?[pendingCalls.Count];
-                Task<ToolCallExecution>[] backgroundTasks = pendingCalls
-                    .Where(call => call.Affinity == ToolExecutionAffinity.BackgroundReadOnly)
-                    .Select(call => this.ExecuteToolCallAsync(call, context, timeout.Token, requestId))
-                    .ToArray();
-                Task<ToolCallExecution[]> backgroundExecutions = Task.WhenAll(backgroundTasks);
-
-                foreach (PendingToolCall call in pendingCalls.Where(call => call.Affinity != ToolExecutionAffinity.BackgroundReadOnly))
-                    executions[call.Index] = await this.ExecuteToolCallAsync(call, context, timeout.Token, requestId);
-
-                foreach (ToolCallExecution execution in await backgroundExecutions)
-                    executions[execution.Call.Index] = execution;
-
-                foreach (PendingToolCall call in pendingCalls)
-                {
-                    ToolCallExecution execution = executions[call.Index]
-                        ?? throw new InvalidOperationException("A tool call completed without a result.");
-                    string result = execution.Result;
-                    ToolResultInspection inspection = ToolResultEnvelope.Inspect(result);
-                    this.monitor.Log(
-                        $"[{requestId}] Step {step + 1} tool={call.Name} args={Summarize(call.Arguments, 200)} " +
-                        $"elapsedMs={execution.ElapsedMilliseconds} status={inspection.LogStatus}.",
-                        LogLevel.Debug
-                    );
-                    AddSources(result, sources);
-                    if (call.Name == WorldMapLocationTool.ToolName)
-                        sawLocationResult = true;
-                    if (call.Name == "wiki_read" && inspection.IsSuccess)
-                        sawSuccessfulWikiRead = true;
-                    if (call.Name == WorldMapLocationTool.ToolName
-                        && NavigationTarget.TryFromToolResult(result, out NavigationTarget? resolvedTarget))
-                        navigationTarget = resolvedTarget;
-                    messages.Add(new Dictionary<string, object?>
-                    {
-                        ["role"] = "tool",
-                        ["tool_call_id"] = call.Id,
-                        ["content"] = result
-                    });
-                }
+                AddSources(result, sources);
+                if (call.Name == WorldMapLocationTool.ToolName)
+                    sawLocationResult = true;
+                if (call.Name == "wiki_read" && inspection.IsSuccess)
+                    sawSuccessfulWikiRead = true;
+                if (call.Name == WorldMapLocationTool.ToolName
+                    && NavigationTarget.TryFromToolResult(result, out NavigationTarget? resolvedTarget))
+                    navigationTarget = resolvedTarget;
+                messages.Add(new ToolChatMessage(call.Id, result));
             }
         }
 

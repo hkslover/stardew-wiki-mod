@@ -1,105 +1,129 @@
 using System.Net;
-using System.Net.Http.Headers;
-using System.Text;
-using System.Text.Json;
+using OpenAI;
+using OpenAI.Chat;
 using StardewModdingAPI;
 using StardewWikiAgent.Config;
+using System.ClientModel;
+using System.ClientModel.Primitives;
+
+#pragma warning disable OPENAI001, SCME0001 // Intentional SDK extension points for optional auth and provider fields.
 
 namespace StardewWikiAgent.Agent;
 
+/// <summary>
+/// Chat Completions adapter backed by the official OpenAI .NET SDK. Provider-specific
+/// fields are applied through the SDK's JSON patch support instead of a handwritten
+/// request serializer.
+/// </summary>
 internal sealed class OpenAiCompatibleClient
 {
     private readonly AgentSettings settings;
     private readonly IMonitor monitor;
-    private readonly HttpClient http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly ChatClient? client;
 
     public OpenAiCompatibleClient(AgentSettings settings, IMonitor monitor)
     {
         this.settings = settings;
         this.monitor = monitor;
-        this.http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("StardewWikiAgent", "0.1"));
+        if (!settings.IsConfigured)
+            return;
+
+        var options = new OpenAIClientOptions
+        {
+            Endpoint = new Uri(settings.BaseUrl.TrimEnd('/')),
+            NetworkTimeout = Timeout.InfiniteTimeSpan
+        };
+        AuthenticationPolicy authentication = string.IsNullOrWhiteSpace(settings.ApiKey)
+            ? NoAuthenticationPolicy.Instance
+            : ApiKeyAuthenticationPolicy.CreateBearerAuthorizationPolicy(new ApiKeyCredential(settings.ApiKey));
+        this.client = new ChatClient(settings.Model, authentication, options);
     }
 
-    public async Task<JsonDocument> CompleteAsync(
-        IReadOnlyList<Dictionary<string, object?>> messages,
-        IReadOnlyList<object> tools,
+    public async Task<ChatCompletion> CompleteAsync(
+        IReadOnlyList<ChatMessage> messages,
+        IReadOnlyList<ChatTool> tools,
         string toolChoice,
         CancellationToken cancellationToken,
         string? requestId = null)
     {
-        string endpoint = this.settings.BaseUrl.TrimEnd('/') + "/chat/completions";
-        var payload = new Dictionary<string, object?>
-        {
-            ["model"] = this.settings.Model,
-            ["messages"] = messages,
-            // max_tokens caps the final answer's output tokens only (not characters,
-            // and — per DeepSeek's spec — not the separate CoT/reasoning_tokens, which
-            // are counted independently). DeepSeek counts ~0.6 token per Chinese
-            // character, so this is a token budget for the reply, decoupled from
-            // MaxAnswerCharacters. (Actual behavior depends on the gateway; see the
-            // usage log in LogUsage to confirm on a specific endpoint.)
-            ["max_tokens"] = this.settings.MaxResponseTokens
-        };
-        // An empty tool list means the caller wants a tools-free completion (the
-        // final forced-answer step). Omitting "tools" entirely keeps that intent
-        // unambiguous across OpenAI-compatible gateways.
+        var options = new ChatCompletionOptions();
+        foreach (ChatTool tool in tools)
+            options.Tools.Add(tool);
+
         if (tools.Count > 0)
-            payload["tools"] = tools;
+        {
+            options.ToolChoice = string.Equals(toolChoice, "required", StringComparison.OrdinalIgnoreCase)
+                ? ChatToolChoice.CreateRequiredChoice()
+                : ChatToolChoice.CreateAutoChoice();
+        }
+
         if (this.settings.IsDeepSeekV4)
         {
-            // DeepSeek V4 thinking mode defaults to high, but send both values
-            // explicitly so the behavior is stable across compatible gateways.
-            payload["thinking"] = new Dictionary<string, object?> { ["type"] = "enabled" };
-            payload["reasoning_effort"] = "high";
+            // DeepSeek's OpenAI-compatible API uses max_tokens and adds thinking
+            // controls that aren't part of the standard ChatCompletionOptions model.
+            options.Patch.Set("$.max_tokens"u8, this.settings.MaxResponseTokens);
+            options.Patch.Set("$.thinking"u8, BinaryData.FromString("""{"type":"enabled"}"""));
+            options.Patch.Set("$.reasoning_effort"u8, "high");
         }
         else
         {
-            payload["temperature"] = 0.2;
+            options.MaxOutputTokenCount = this.settings.MaxResponseTokens;
+            options.Temperature = 0.2f;
         }
-        if (tools.Count > 0)
-            payload["tool_choice"] = toolChoice;
-        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-        };
-        if (!string.IsNullOrWhiteSpace(this.settings.ApiKey))
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", this.settings.ApiKey);
 
-        using HttpResponseMessage response = await this.http.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
-        string body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        try
+        {
+            ChatClient configuredClient = this.client
+                ?? throw new InvalidOperationException("The LLM client is not configured.");
+            ChatCompletion completion = await configuredClient.CompleteChatAsync(messages, options, cancellationToken);
+            this.LogUsage(completion, requestId);
+            return completion;
+        }
+        catch (ClientResultException ex)
         {
             string prefix = requestId is null ? "" : $"[{requestId}] ";
-            this.monitor.Log($"{prefix}LLM HTTP {(int)response.StatusCode} ({response.StatusCode}).", LogLevel.Warn);
-            throw new LlmHttpException(response.StatusCode, body);
+            HttpStatusCode statusCode = (HttpStatusCode)ex.Status;
+            this.monitor.Log($"{prefix}LLM HTTP {ex.Status} ({statusCode}).", LogLevel.Warn);
+            throw new LlmHttpException(statusCode, ex.Message, ex);
         }
-        JsonDocument document = JsonDocument.Parse(body);
-        LogUsage(document, requestId);
-        return document;
     }
 
-    /// <summary>Logs the token usage the API attaches to every response, for diagnostics/tuning.</summary>
-    private void LogUsage(JsonDocument document, string? requestId)
+    /// <summary>Logs token usage reported by the provider for diagnostics and tuning.</summary>
+    private void LogUsage(ChatCompletion completion, string? requestId)
     {
-        if (!document.RootElement.TryGetProperty("usage", out JsonElement usage)
-            || usage.ValueKind != JsonValueKind.Object)
+        ChatTokenUsage? usage = completion.Usage;
+        if (usage is null)
             return;
 
-        int Read(string name) => usage.TryGetProperty(name, out JsonElement value)
-            && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : -1;
-
-        int prompt = Read("prompt_tokens");
-        int completion = Read("completion_tokens");
-        int total = Read("total_tokens");
-        int reasoning = usage.TryGetProperty("completion_tokens_details", out JsonElement details)
-            && details.ValueKind == JsonValueKind.Object
-            && details.TryGetProperty("reasoning_tokens", out JsonElement r)
-            && r.ValueKind == JsonValueKind.Number ? r.GetInt32() : -1;
-
+        int reasoning = usage.OutputTokenDetails?.ReasoningTokenCount ?? -1;
         string prefix = requestId is null ? "" : $"[{requestId}] ";
         this.monitor.Log(
-            $"{prefix}LLM usage: prompt={prompt} completion={completion} (reasoning={reasoning}) total={total}, max_tokens={this.settings.MaxResponseTokens}.",
-            LogLevel.Debug);
+            $"{prefix}LLM usage: prompt={usage.InputTokenCount} completion={usage.OutputTokenCount} " +
+            $"(reasoning={reasoning}) total={usage.TotalTokenCount}, max_tokens={this.settings.MaxResponseTokens}.",
+            LogLevel.Debug
+        );
+    }
+
+    /// <summary>Preserves support for local OpenAI-compatible endpoints that don't require a key.</summary>
+    private sealed class NoAuthenticationPolicy : AuthenticationPolicy
+    {
+        public static NoAuthenticationPolicy Instance { get; } = new();
+
+        public override void Process(
+            PipelineMessage message,
+            IReadOnlyList<PipelinePolicy> pipeline,
+            int currentIndex)
+        {
+            ProcessNext(message, pipeline, currentIndex);
+        }
+
+        public override ValueTask ProcessAsync(
+            PipelineMessage message,
+            IReadOnlyList<PipelinePolicy> pipeline,
+            int currentIndex)
+        {
+            return ProcessNextAsync(message, pipeline, currentIndex);
+        }
     }
 }
 
@@ -107,9 +131,11 @@ internal sealed class LlmHttpException : HttpRequestException
 {
     public HttpStatusCode ResponseStatusCode { get; }
 
-    public LlmHttpException(HttpStatusCode statusCode, string responseBody)
-        : base($"LLM request failed with {(int)statusCode} ({statusCode}).")
+    public LlmHttpException(HttpStatusCode statusCode, string responseBody, Exception? innerException = null)
+        : base($"LLM request failed with {(int)statusCode} ({statusCode}). {responseBody}", innerException)
     {
         this.ResponseStatusCode = statusCode;
     }
 }
+
+#pragma warning restore OPENAI001, SCME0001

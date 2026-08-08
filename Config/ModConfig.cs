@@ -5,6 +5,9 @@ namespace StardewWikiAgent.Config;
 /// <summary>Non-secret local configuration. Environment variables override these values.</summary>
 public sealed class ModConfig
 {
+    public const int DefaultMaxResponseTokens = 8192;
+    private const int LegacyDefaultMaxResponseTokens = 2048;
+
     public string BaseUrl { get; set; } = "http://localhost:8317/v1";
     public string ApiKey { get; set; } = "";
     public string Model { get; set; } = "deepseek-v4-flash";
@@ -12,7 +15,7 @@ public sealed class ModConfig
     public int RequestTimeoutSeconds { get; set; } = 90;
     public int MaxAgentSteps { get; set; } = 8;
     public int MaxAnswerCharacters { get; set; } = 1800;
-    public int MaxResponseTokens { get; set; } = 2048;
+    public int MaxResponseTokens { get; set; } = DefaultMaxResponseTokens;
     public bool IncludeGameContext { get; set; } = true;
     public bool EnableQuestLogTool { get; set; } = true;
 
@@ -40,10 +43,21 @@ public sealed class ModConfig
             monitor.Log("MaxAnswerCharacters must be between 200 and 8000; using 1800.", LogLevel.Warn);
             this.MaxAnswerCharacters = 1800;
         }
-        if (this.MaxResponseTokens is < 256 or > 8192)
+        if (this.MaxResponseTokens == LegacyDefaultMaxResponseTokens)
         {
-            monitor.Log("MaxResponseTokens must be between 256 and 8192; using 2048.", LogLevel.Warn);
-            this.MaxResponseTokens = 2048;
+            monitor.Log(
+                $"Migrating the old MaxResponseTokens default from {LegacyDefaultMaxResponseTokens} to {DefaultMaxResponseTokens}.",
+                LogLevel.Info
+            );
+            this.MaxResponseTokens = DefaultMaxResponseTokens;
+        }
+        if (this.MaxResponseTokens is < 1024 or > 131072)
+        {
+            monitor.Log(
+                $"MaxResponseTokens must be between 1024 and 131072; using {DefaultMaxResponseTokens}.",
+                LogLevel.Warn
+            );
+            this.MaxResponseTokens = DefaultMaxResponseTokens;
         }
         if (this.VoiceMaxSeconds is < 3 or > 120)
         {

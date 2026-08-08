@@ -8,16 +8,58 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <!-- Bundle third-party managed assemblies (sherpa-onnx, PortAudioSharp) into the mod folder. -->
-    <BundleExtraAssemblies>ThirdParty</BundleExtraAssemblies>
-    <!-- The per-platform runtimes/ tree is redundant once the macOS natives are flattened to the root. -->
+    <!-- Stardew/SMAPI requires net6.0; the OpenAI SDK's transitive packages use their netstandard2.0 assets. -->
+    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+    <!-- Bundle SDK/runtime dependencies plus third-party assemblies into the mod folder. -->
+    <BundleExtraAssemblies>System,ThirdParty</BundleExtraAssemblies>
+    <!-- A safety net for stale output produced before platform-specific runtime selection was enabled. -->
     <IgnoreModFilePatterns>^runtimes/</IgnoreModFilePatterns>
+
+    <SherpaOnnxVersion>1.13.4</SherpaOnnxVersion>
+    <PortAudioSharpVersion>1.0.6</PortAudioSharpVersion>
+
+    <!--
+      Select native speech libraries for the game process before NuGet resolves build assets.
+      Stardew Valley is x64 on these desktop platforms; on Apple Silicon it runs through Rosetta 2.
+      An explicit -p:RuntimeIdentifier=... still takes precedence for supported cross-builds.
+    -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <!-- Preserve the existing bin/{Configuration}/net6.0 layout expected by the build scripts. -->
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="OpenAI" Version="2.12.0" />
     <PackageReference Include="Pathoschild.Stardew.ModBuildConfig" Version="4.4.0" />
-    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.4" />
-    <PackageReference Include="PortAudioSharp2" Version="1.0.6" />
+
+    <!--
+      The managed wrapper packages depend on native packages for every supported platform. Download
+      just their managed assemblies, then reference only the runtime packages selected below.
+    -->
+    <PackageDownload Include="org.k2fsa.sherpa.onnx" Version="[$(SherpaOnnxVersion)]" />
+    <PackageDownload Include="PortAudioSharp2" Version="[$(PortAudioSharpVersion)]" />
+    <Reference Include="sherpa-onnx"
+               HintPath="$(NuGetPackageRoot)/org.k2fsa.sherpa.onnx/$(SherpaOnnxVersion)/lib/net6.0/sherpa-onnx.dll"
+               Private="true" />
+    <Reference Include="PortAudioSharp"
+               HintPath="$(NuGetPackageRoot)/portaudiosharp2/$(PortAudioSharpVersion)/lib/net6.0/PortAudioSharp.dll"
+               Private="true" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'osx-x64'">
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.osx-x64" Version="$(SherpaOnnxVersion)" />
+    <PackageReference Include="org.k2fsa.portaudio.runtime.osx-x64" Version="$(PortAudioSharpVersion)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="$(SherpaOnnxVersion)" />
+    <PackageReference Include="org.k2fsa.portaudio.runtime.win-x64" Version="$(PortAudioSharpVersion)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.linux-x64" Version="$(SherpaOnnxVersion)" />
+    <PackageReference Include="org.k2fsa.portaudio.runtime.linux-x64" Version="$(PortAudioSharpVersion)" />
   </ItemGroup>
 
   <!-- Bundle the local ASR model (downloaded into ./models, gitignored) into the mod's assets/asr folder. -->
@@ -32,28 +74,11 @@
           Condition="Exists('models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01/tokens.txt')" />
   </ItemGroup>
 
-  <!--
-    Flatten the native libraries next to the mod DLL. Under SMAPI a mod has no runtime config that
-    probes runtimes/<rid>/native, so the native libraries must sit beside the managed assembly for
-    the DllImportResolver to find them. Runs before ModBuildConfig collects files to deploy.
-
-    The natives are picked by the BUILD host OS (build on Windows -> a Windows mod; build on macOS
-    -> a macOS mod). Stardew Valley is a 64-bit x64 process on both: on Apple Silicon it runs under
-    Rosetta 2, so macOS needs the osx-x64 binaries, not osx-arm64.
-  -->
-  <Target Name="FlattenNativeLibs" AfterTargets="Build" BeforeTargets="_CopyModFilesToGame;AfterBuild">
-    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-      <_NativeLibs Include="$(TargetDir)runtimes/osx-x64/native/*.dylib" />
-    </ItemGroup>
-    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-      <_NativeLibs Include="$(TargetDir)runtimes/win-x64/native/*.dll" />
-    </ItemGroup>
-    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
-      <_NativeLibs Include="$(TargetDir)runtimes/linux-x64/native/*.so" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_NativeLibs)"
-          DestinationFolder="$(TargetDir)"
-          SkipUnchangedFiles="true"
-          Condition="'@(_NativeLibs)' != ''" />
+  <Target Name="PrepareSpeechNativeRuntime" BeforeTargets="PrepareForBuild;_CopyFilesMarkedCopyLocal">
+    <Error Condition="'$(RuntimeIdentifier)' != 'osx-x64' and '$(RuntimeIdentifier)' != 'win-x64' and '$(RuntimeIdentifier)' != 'linux-x64'"
+           Text="Unsupported speech runtime '$(RuntimeIdentifier)'. Supported values: osx-x64, win-x64, linux-x64." />
+    <Message Importance="high" Text="[speech] Native runtime: $(RuntimeIdentifier)" />
+    <!-- Remove multi-platform output left by builds made before RID filtering was enabled. -->
+    <RemoveDir Directories="$(TargetDir)runtimes" Condition="Exists('$(TargetDir)runtimes')" />
   </Target>
 </Project>
