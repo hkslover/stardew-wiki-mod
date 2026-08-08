@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A SMAPI 4.5.2 mod for Stardew Valley 1.6.15 (`net6.0`). It adds an in-game `/ask <问题>` chat command that answers questions about the game by driving an OpenAI-compatible Chat Completions endpoint through a tool-calling loop. The agent's tools query the **Chinese** Stardew Valley Wiki (`zh.stardewvalleywiki.com`) and expose read-only game state. Answers and their source URLs are printed back into the chat box. The user-facing language is Chinese (tool descriptions, system prompt, and chat replies are all Chinese).
 
-Despite the project directory and `.csproj` being named `ConsoleHelloMod`, the assembly, namespace, and mod folder are all `StardewWikiAgent` (see `manifest.json` / `.csproj`).
+The containing directory is `stardew_wiki_mod`, but the `.csproj`, assembly, namespace, and mod folder are all `StardewWikiAgent` (see `manifest.json` / `StardewWikiAgent.csproj`).
 
 ## Build & deploy
 
@@ -16,7 +16,7 @@ Despite the project directory and `.csproj` being named `ConsoleHelloMod`, the a
 DOTNET_ROOT=/usr/local/share/dotnet \
 DOTNET_CLI_HOME="$PWD/.dotnet-cli-home" \
 NUGET_PACKAGES="$PWD/.nuget-packages" \
-/usr/local/share/dotnet/dotnet build ConsoleHelloMod.csproj
+/usr/local/share/dotnet/dotnet build StardewWikiAgent.csproj
 ```
 
 `Pathoschild.Stardew.ModBuildConfig` (the only NuGet dependency) resolves the SMAPI/Stardew reference assemblies and, on build, auto-deploys the DLL + `manifest.json` into the game's `Mods/StardewWikiAgent` folder and produces a release zip. There is no separate test project — verification is manual, in-game (see below).

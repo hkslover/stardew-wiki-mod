@@ -26,7 +26,7 @@
 ## 构建
 
 ```bash
-dotnet build ConsoleHelloMod.csproj -c Release
+dotnet build StardewWikiAgent.csproj -c Release
 ```
 
 项目采用 [MIT License](LICENSE)。

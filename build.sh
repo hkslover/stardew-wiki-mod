@@ -30,7 +30,7 @@ DOTNET="$DOTNET_ROOT/dotnet"
 # 若已在环境里设置 GamePath 则尊重之,否则用本机默认 Steam 安装位置。
 GAME_PATH="${GamePath:-/Users/snow/Library/Application Support/Steam/steamapps/common/Stardew Valley/Contents/MacOS}"
 
-CSPROJ="ConsoleHelloMod.csproj"
+CSPROJ="StardewWikiAgent.csproj"
 
 if [ ! -x "$DOTNET" ]; then
   echo "错误:找不到 dotnet:$DOTNET" >&2
