@@ -52,10 +52,33 @@ internal sealed class AgentToolRegistry
 
     public IReadOnlyList<IAgentTool> Snapshot() => this.tools.Values.OrderBy(tool => tool.Name).ToArray();
 
-    public async Task<string> ExecuteAsync(string name, string argumentsJson, GameContextSnapshot context, CancellationToken ct)
+    public bool TryGetAffinity(string name, out ToolExecutionAffinity affinity)
+    {
+        if (this.tools.TryGetValue(name, out IAgentTool? tool))
+        {
+            affinity = tool.ExecutionAffinity;
+            return true;
+        }
+
+        affinity = ToolExecutionAffinity.MainThreadReadOnly;
+        return false;
+    }
+
+    public async Task<string> ExecuteAsync(
+        string name,
+        string argumentsJson,
+        GameContextSnapshot context,
+        CancellationToken ct,
+        string? requestId = null)
     {
         if (!this.tools.TryGetValue(name, out IAgentTool? tool))
-            return JsonSerializer.Serialize(new { error = $"Unknown tool: {name}" });
+        {
+            return ToolResultEnvelope.Failure(
+                "unknown_tool",
+                $"Unknown tool: {name}",
+                "Use only a tool name included in the current tools list."
+            );
+        }
         try
         {
             if (tool.ExecutionAffinity == ToolExecutionAffinity.MainThreadReadOnly)
@@ -67,10 +90,19 @@ internal sealed class AgentToolRegistry
             }
             return await tool.ExecuteAsync(argumentsJson, context, ct);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            this.monitor.Log($"AI tool '{name}' failed: {ex.Message}", LogLevel.Warn);
-            return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message });
+            string prefix = requestId is null ? "" : $"[{requestId}] ";
+            this.monitor.Log($"{prefix}AI tool '{name}' failed: {ex.Message}", LogLevel.Warn);
+            return ToolResultEnvelope.Failure(
+                "tool_exception",
+                $"Tool '{name}' failed with {ex.GetType().Name}: {ex.Message}",
+                "Use the error context to retry with corrected arguments, choose another tool, or explain the limitation."
+            );
         }
     }
 

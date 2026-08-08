@@ -1,6 +1,7 @@
-using System.Text.Json;
-using System.Net;
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Net;
+using System.Text.Json;
 using StardewModdingAPI;
 using StardewWikiAgent.Api;
 using StardewWikiAgent.Config;
@@ -47,6 +48,11 @@ internal sealed class AgentRunner
         if (!this.settings.IsConfigured)
             throw new InvalidOperationException("LLM 尚未配置。请设置 OPENAI_BASE_URL、OPENAI_MODEL，并在需要时设置 OPENAI_API_KEY。");
 
+        string requestId = Guid.NewGuid().ToString("N")[..8];
+        var answerPolicy = new AnswerPolicy(question);
+        bool sawLocationResult = false;
+        bool sawSuccessfulWikiRead = false;
+        bool lengthToolRetrySent = false;
         var messages = new List<Dictionary<string, object?>>
         {
             new() { ["role"] = "system", ["content"] = SystemPrompt },
@@ -86,40 +92,112 @@ internal sealed class AgentRunner
             JsonDocument response;
             try
             {
-                response = await this.client.CompleteAsync(messages, stepTools, toolChoice, timeout.Token);
+                response = await this.client.CompleteAsync(messages, stepTools, toolChoice, timeout.Token, requestId);
             }
             catch (LlmHttpException ex) when (step == 0 && ex.ResponseStatusCode is HttpStatusCode.BadRequest or HttpStatusCode.NotFound)
             {
-                this.monitor.Log("LLM endpoint rejected tool_choice=required; retrying with auto.", LogLevel.Debug);
-                response = await this.client.CompleteAsync(messages, stepTools, "auto", timeout.Token);
+                this.monitor.Log($"[{requestId}] LLM endpoint rejected tool_choice=required; retrying with auto.", LogLevel.Debug);
+                response = await this.client.CompleteAsync(messages, stepTools, "auto", timeout.Token, requestId);
             }
 
             using (response)
             {
-                JsonElement message = response.RootElement.GetProperty("choices")[0].GetProperty("message");
+                JsonElement choice = response.RootElement.GetProperty("choices")[0];
+                JsonElement message = choice.GetProperty("message");
+                string? finishReason = choice.TryGetProperty("finish_reason", out JsonElement finishReasonElement)
+                    && finishReasonElement.ValueKind == JsonValueKind.String
+                        ? finishReasonElement.GetString()
+                        : null;
+                this.monitor.Log(
+                    $"[{requestId}] Step {step + 1} finish_reason={finishReason ?? "null"}.",
+                    LogLevel.Debug
+                );
                 string content = message.TryGetProperty("content", out JsonElement contentElement)
                     && contentElement.ValueKind == JsonValueKind.String
                     ? contentElement.GetString() ?? ""
                     : "";
                 JsonElement toolCalls = message.TryGetProperty("tool_calls", out JsonElement calls) ? calls : default;
+                bool hasToolCalls = toolCalls.ValueKind == JsonValueKind.Array && toolCalls.GetArrayLength() > 0;
 
-                var assistant = new Dictionary<string, object?> { ["role"] = "assistant", ["content"] = content };
-                if (message.TryGetProperty("reasoning_content", out JsonElement reasoningContent))
-                    assistant["reasoning_content"] = reasoningContent.ValueKind == JsonValueKind.String
-                        ? reasoningContent.GetString()
-                        : null;
-                if (toolCalls.ValueKind == JsonValueKind.Array && toolCalls.GetArrayLength() > 0)
-                    assistant["tool_calls"] = JsonSerializer.Deserialize<object>(toolCalls.GetRawText());
-                messages.Add(assistant);
+                if (string.Equals(finishReason, "content_filter", StringComparison.OrdinalIgnoreCase))
+                {
+                    this.monitor.Log($"[{requestId}] LLM response was blocked by content filtering.", LogLevel.Warn);
+                    return new AgentAnswer
+                    {
+                        Text = "回答被内容过滤，请换一种问法。",
+                        Sources = sources.ToArray(),
+                        NavigationTarget = navigationTarget
+                    };
+                }
 
-                if (toolCalls.ValueKind != JsonValueKind.Array || toolCalls.GetArrayLength() == 0)
+                if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase) && hasToolCalls)
+                {
+                    if (!lengthToolRetrySent)
+                    {
+                        lengthToolRetrySent = true;
+                        this.monitor.Log($"[{requestId}] Truncated tool call discarded; requesting one complete retry.", LogLevel.Warn);
+                        messages.Add(new Dictionary<string, object?>
+                        {
+                            ["role"] = "system",
+                            ["content"] = "Your previous reply was cut off. Repeat the tool call(s) completely."
+                        });
+                        continue;
+                    }
+
+                    this.monitor.Log($"[{requestId}] Tool call was still truncated after one retry.", LogLevel.Warn);
+                    return new AgentAnswer
+                    {
+                        Text = "模型的工具调用内容被截断，请换一种问法重试。",
+                        Sources = sources.ToArray(),
+                        NavigationTarget = navigationTarget
+                    };
+                }
+                else if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase))
+                {
+                    this.monitor.Log($"[{requestId}] Returning a text answer truncated by the model token limit.", LogLevel.Warn);
                     return new AgentAnswer
                     {
                         Text = Limit(content),
                         Sources = sources.ToArray(),
                         NavigationTarget = navigationTarget
                     };
+                }
 
+                var assistant = new Dictionary<string, object?> { ["role"] = "assistant", ["content"] = content };
+                if (message.TryGetProperty("reasoning_content", out JsonElement reasoningContent))
+                    assistant["reasoning_content"] = reasoningContent.ValueKind == JsonValueKind.String
+                        ? reasoningContent.GetString()
+                        : null;
+                if (hasToolCalls)
+                    assistant["tool_calls"] = JsonSerializer.Deserialize<object>(toolCalls.GetRawText());
+                messages.Add(assistant);
+
+                if (!hasToolCalls)
+                {
+                    string? correction = finalStep
+                        ? null
+                        : answerPolicy.GetCorrection(sawLocationResult, sawSuccessfulWikiRead);
+                    if (correction is not null)
+                    {
+                        this.monitor.Log($"[{requestId}] Step {step + 1}: answer policy requested another tool round.", LogLevel.Debug);
+                        messages.Add(new Dictionary<string, object?>
+                        {
+                            ["role"] = "system",
+                            ["content"] = correction
+                        });
+                        continue;
+                    }
+
+                    return new AgentAnswer
+                    {
+                        Text = Limit(content),
+                        Sources = sources.ToArray(),
+                        NavigationTarget = navigationTarget
+                    };
+                }
+
+                var pendingCalls = new List<PendingToolCall>();
+                int callIndex = 0;
                 foreach (JsonElement call in toolCalls.EnumerateArray())
                 {
                     string id = call.GetProperty("id").GetString() ?? Guid.NewGuid().ToString("N");
@@ -128,16 +206,48 @@ internal sealed class AgentRunner
                     string arguments = function.TryGetProperty("arguments", out JsonElement argumentElement)
                         ? argumentElement.GetString() ?? "{}"
                         : "{}";
-                    this.monitor.Log($"AI tool call: {name}", LogLevel.Debug);
-                    string result = await this.tools.ExecuteAsync(name, arguments, context, timeout.Token);
+                    ToolExecutionAffinity affinity = this.tools.TryGetAffinity(name, out ToolExecutionAffinity registeredAffinity)
+                        ? registeredAffinity
+                        : ToolExecutionAffinity.MainThreadReadOnly;
+                    pendingCalls.Add(new PendingToolCall(callIndex++, id, name, arguments, affinity));
+                }
+
+                var executions = new ToolCallExecution?[pendingCalls.Count];
+                Task<ToolCallExecution>[] backgroundTasks = pendingCalls
+                    .Where(call => call.Affinity == ToolExecutionAffinity.BackgroundReadOnly)
+                    .Select(call => this.ExecuteToolCallAsync(call, context, timeout.Token, requestId))
+                    .ToArray();
+                Task<ToolCallExecution[]> backgroundExecutions = Task.WhenAll(backgroundTasks);
+
+                foreach (PendingToolCall call in pendingCalls.Where(call => call.Affinity != ToolExecutionAffinity.BackgroundReadOnly))
+                    executions[call.Index] = await this.ExecuteToolCallAsync(call, context, timeout.Token, requestId);
+
+                foreach (ToolCallExecution execution in await backgroundExecutions)
+                    executions[execution.Call.Index] = execution;
+
+                foreach (PendingToolCall call in pendingCalls)
+                {
+                    ToolCallExecution execution = executions[call.Index]
+                        ?? throw new InvalidOperationException("A tool call completed without a result.");
+                    string result = execution.Result;
+                    ToolResultInspection inspection = ToolResultEnvelope.Inspect(result);
+                    this.monitor.Log(
+                        $"[{requestId}] Step {step + 1} tool={call.Name} args={Summarize(call.Arguments, 200)} " +
+                        $"elapsedMs={execution.ElapsedMilliseconds} status={inspection.LogStatus}.",
+                        LogLevel.Debug
+                    );
                     AddSources(result, sources);
-                    if (name == WorldMapLocationTool.ToolName
+                    if (call.Name == WorldMapLocationTool.ToolName)
+                        sawLocationResult = true;
+                    if (call.Name == "wiki_read" && inspection.IsSuccess)
+                        sawSuccessfulWikiRead = true;
+                    if (call.Name == WorldMapLocationTool.ToolName
                         && NavigationTarget.TryFromToolResult(result, out NavigationTarget? resolvedTarget))
                         navigationTarget = resolvedTarget;
                     messages.Add(new Dictionary<string, object?>
                     {
                         ["role"] = "tool",
-                        ["tool_call_id"] = id,
+                        ["tool_call_id"] = call.Id,
                         ["content"] = result
                     });
                 }
@@ -154,9 +264,28 @@ internal sealed class AgentRunner
 
     private string Limit(string text)
     {
+        // Authoritative source URLs are appended by ChatAnswerPresenter after this body budget.
         if (text.Length <= this.settings.MaxAnswerCharacters)
             return text;
         return text[..this.settings.MaxAnswerCharacters] + "…";
+    }
+
+    private async Task<ToolCallExecution> ExecuteToolCallAsync(
+        PendingToolCall call,
+        GameContextSnapshot context,
+        CancellationToken cancellationToken,
+        string requestId)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        string result = await this.tools.ExecuteAsync(
+            call.Name,
+            call.Arguments,
+            context,
+            cancellationToken,
+            requestId
+        );
+        stopwatch.Stop();
+        return new ToolCallExecution(call, result, stopwatch.ElapsedMilliseconds);
     }
 
     private static void AddSources(string json, List<string> sources)
@@ -164,16 +293,24 @@ internal sealed class AgentRunner
         try
         {
             using JsonDocument document = JsonDocument.Parse(json);
-            if (document.RootElement.TryGetProperty("source", out JsonElement source)
-                && source.ValueKind == JsonValueKind.String)
-                AddUnique(sources, source.GetString()!);
-            if (document.RootElement.TryGetProperty("sources", out JsonElement many)
-                && many.ValueKind == JsonValueKind.Array)
-                foreach (JsonElement item in many.EnumerateArray())
-                    if (item.ValueKind == JsonValueKind.String)
-                        AddUnique(sources, item.GetString()!);
+            AddSourceFields(document.RootElement, sources);
+            if (document.RootElement.TryGetProperty("data", out JsonElement data)
+                && data.ValueKind == JsonValueKind.Object)
+                AddSourceFields(data, sources);
         }
         catch (JsonException) { }
+    }
+
+    private static void AddSourceFields(JsonElement element, List<string> sources)
+    {
+        if (element.TryGetProperty("source", out JsonElement source)
+                && source.ValueKind == JsonValueKind.String)
+            AddUnique(sources, source.GetString()!);
+        if (element.TryGetProperty("sources", out JsonElement many)
+            && many.ValueKind == JsonValueKind.Array)
+            foreach (JsonElement item in many.EnumerateArray())
+                if (item.ValueKind == JsonValueKind.String)
+                    AddUnique(sources, item.GetString()!);
     }
 
     private static void AddUnique(List<string> sources, string value)
@@ -181,6 +318,22 @@ internal sealed class AgentRunner
         if (!sources.Contains(value))
             sources.Add(value);
     }
+
+    private static string Summarize(string value, int maxLength)
+    {
+        string singleLine = value.Replace('\r', ' ').Replace('\n', ' ');
+        return singleLine.Length <= maxLength ? singleLine : singleLine[..maxLength] + "…";
+    }
+
+    private sealed record PendingToolCall(
+        int Index,
+        string Id,
+        string Name,
+        string Arguments,
+        ToolExecutionAffinity Affinity
+    );
+
+    private sealed record ToolCallExecution(PendingToolCall Call, string Result, long ElapsedMilliseconds);
 }
 
 public sealed class StardewWikiAgentApi : IStardewWikiAgentApi

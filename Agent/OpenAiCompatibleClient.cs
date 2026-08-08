@@ -24,7 +24,8 @@ internal sealed class OpenAiCompatibleClient
         IReadOnlyList<Dictionary<string, object?>> messages,
         IReadOnlyList<object> tools,
         string toolChoice,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? requestId = null)
     {
         string endpoint = this.settings.BaseUrl.TrimEnd('/') + "/chat/completions";
         var payload = new Dictionary<string, object?>
@@ -40,9 +41,8 @@ internal sealed class OpenAiCompatibleClient
             ["max_tokens"] = this.settings.MaxResponseTokens
         };
         // An empty tool list means the caller wants a tools-free completion (the
-        // final forced-answer step). Omitting "tools" entirely is the only way to
-        // stop a tool call that works across gateways — DeepSeek V4 ignores
-        // tool_choice, so tool_choice=none would not prevent one there.
+        // final forced-answer step). Omitting "tools" entirely keeps that intent
+        // unambiguous across OpenAI-compatible gateways.
         if (tools.Count > 0)
             payload["tools"] = tools;
         if (this.settings.IsDeepSeekV4)
@@ -51,15 +51,13 @@ internal sealed class OpenAiCompatibleClient
             // explicitly so the behavior is stable across compatible gateways.
             payload["thinking"] = new Dictionary<string, object?> { ["type"] = "enabled" };
             payload["reasoning_effort"] = "high";
-            // DeepSeek V4 thinking-mode integrations may reject tool_choice;
-            // omitting it leaves the API's tool selection at auto.
         }
         else
         {
-            if (tools.Count > 0)
-                payload["tool_choice"] = toolChoice;
             payload["temperature"] = 0.2;
         }
+        if (tools.Count > 0)
+            payload["tool_choice"] = toolChoice;
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
             Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
@@ -71,16 +69,17 @@ internal sealed class OpenAiCompatibleClient
         string body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            this.monitor.Log($"LLM HTTP {(int)response.StatusCode} ({response.StatusCode}).", LogLevel.Warn);
+            string prefix = requestId is null ? "" : $"[{requestId}] ";
+            this.monitor.Log($"{prefix}LLM HTTP {(int)response.StatusCode} ({response.StatusCode}).", LogLevel.Warn);
             throw new LlmHttpException(response.StatusCode, body);
         }
         JsonDocument document = JsonDocument.Parse(body);
-        LogUsage(document);
+        LogUsage(document, requestId);
         return document;
     }
 
     /// <summary>Logs the token usage the API attaches to every response, for diagnostics/tuning.</summary>
-    private void LogUsage(JsonDocument document)
+    private void LogUsage(JsonDocument document, string? requestId)
     {
         if (!document.RootElement.TryGetProperty("usage", out JsonElement usage)
             || usage.ValueKind != JsonValueKind.Object)
@@ -97,8 +96,9 @@ internal sealed class OpenAiCompatibleClient
             && details.TryGetProperty("reasoning_tokens", out JsonElement r)
             && r.ValueKind == JsonValueKind.Number ? r.GetInt32() : -1;
 
+        string prefix = requestId is null ? "" : $"[{requestId}] ";
         this.monitor.Log(
-            $"LLM usage: prompt={prompt} completion={completion} (reasoning={reasoning}) total={total}, max_tokens={this.settings.MaxResponseTokens}.",
+            $"{prefix}LLM usage: prompt={prompt} completion={completion} (reasoning={reasoning}) total={total}, max_tokens={this.settings.MaxResponseTokens}.",
             LogLevel.Debug);
     }
 }
