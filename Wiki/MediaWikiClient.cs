@@ -15,6 +15,11 @@ internal sealed class MediaWikiClient
     private static readonly Regex TagRegex = new(
         "<script[\\s\\S]*?</script>|<style[\\s\\S]*?</style>|<[^>]+>",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex BlockBoundaryRegex = new(
+        @"</(?:p|li|tr|h[1-6])\s*>|<br\s*/?>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex InlineWhitespaceRegex = new(@"[^\S\r\n]+", RegexOptions.Compiled);
+    private static readonly Regex ExcessNewlineRegex = new(@"\n{3,}", RegexOptions.Compiled);
     private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
 
     private readonly HttpClient http = new();
@@ -80,7 +85,10 @@ internal sealed class MediaWikiClient
         {
             JsonDocument sections = await this.GetAsync(new Dictionary<string, string>
             {
-                ["action"] = "parse", ["page"] = page.Trim(), ["prop"] = "sections", ["redirects"] = "1"
+                ["action"] = "parse",
+                ["page"] = page.Trim(),
+                ["prop"] = "sections",
+                ["redirects"] = "1"
             }, cancellationToken);
             using (sections)
             {
@@ -130,7 +138,10 @@ internal sealed class MediaWikiClient
     {
         JsonDocument data = await this.GetAsync(new Dictionary<string, string>
         {
-            ["action"] = "parse", ["page"] = page, ["prop"] = "sections", ["redirects"] = "1"
+            ["action"] = "parse",
+            ["page"] = page,
+            ["prop"] = "sections",
+            ["redirects"] = "1"
         }, cancellationToken);
         using (data)
         {
@@ -189,17 +200,34 @@ internal sealed class MediaWikiClient
             if (selected.Count > 0)
             {
                 string focused = string.Join("\n\n", selected);
-                return focused[..Math.Min(max, focused.Length)] + "\n[excerpted by question keyword]";
+                return TruncateAtParagraph(focused, max) + "\n[excerpted by question keyword]";
             }
         }
-        return text[..max] + "\n[body too long, truncated]";
+        return TruncateAtParagraph(text, max) + "\n[body too long, truncated]";
     }
 
     private static string StripHtml(string html)
     {
-        string text = TagRegex.Replace(html ?? "", " ");
+        string text = BlockBoundaryRegex.Replace(html ?? "", "\n\n");
+        text = TagRegex.Replace(text, " ");
         text = WebUtility.HtmlDecode(text);
-        return WhitespaceRegex.Replace(text, " ").Trim();
+        text = text.Replace("\r\n", "\n").Replace('\r', '\n');
+        string[] lines = text.Split('\n')
+            .Select(line => InlineWhitespaceRegex.Replace(line, " ").Trim())
+            .ToArray();
+        text = string.Join("\n", lines);
+        return ExcessNewlineRegex.Replace(text, "\n\n").Trim();
+    }
+
+    private static string TruncateAtParagraph(string text, int maxLength)
+    {
+        if (text.Length <= maxLength)
+            return text;
+
+        int boundary = text.LastIndexOf("\n\n", maxLength, StringComparison.Ordinal);
+        return boundary >= maxLength / 2
+            ? text[..boundary].TrimEnd()
+            : text[..maxLength].TrimEnd();
     }
 
     private static string GetElementText(JsonElement element)
