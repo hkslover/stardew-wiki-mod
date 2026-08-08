@@ -251,6 +251,7 @@ internal sealed class ModEntry : Mod
         this.Monitor.Log(
             $"Configured={settings.IsConfigured}; Model={settings.Model}; " +
             $"BaseUrl={settings.BaseUrl}; WikiApi={settings.WikiApiUrl}; " +
+            $"MaxSteps={settings.MaxAgentSteps}; MaxResponseTokens={settings.MaxResponseTokens}; " +
             $"QuestLogTool={this.config.EnableQuestLogTool}",
             LogLevel.Info
         );

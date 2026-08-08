@@ -31,9 +31,20 @@ internal sealed class OpenAiCompatibleClient
         {
             ["model"] = this.settings.Model,
             ["messages"] = messages,
-            ["tools"] = tools,
-            ["max_tokens"] = this.settings.MaxAnswerCharacters
+            // max_tokens caps the final answer's output tokens only (not characters,
+            // and — per DeepSeek's spec — not the separate CoT/reasoning_tokens, which
+            // are counted independently). DeepSeek counts ~0.6 token per Chinese
+            // character, so this is a token budget for the reply, decoupled from
+            // MaxAnswerCharacters. (Actual behavior depends on the gateway; see the
+            // usage log in LogUsage to confirm on a specific endpoint.)
+            ["max_tokens"] = this.settings.MaxResponseTokens
         };
+        // An empty tool list means the caller wants a tools-free completion (the
+        // final forced-answer step). Omitting "tools" entirely is the only way to
+        // stop a tool call that works across gateways — DeepSeek V4 ignores
+        // tool_choice, so tool_choice=none would not prevent one there.
+        if (tools.Count > 0)
+            payload["tools"] = tools;
         if (this.settings.IsDeepSeekV4)
         {
             // DeepSeek V4 thinking mode defaults to high, but send both values
@@ -45,7 +56,8 @@ internal sealed class OpenAiCompatibleClient
         }
         else
         {
-            payload["tool_choice"] = toolChoice;
+            if (tools.Count > 0)
+                payload["tool_choice"] = toolChoice;
             payload["temperature"] = 0.2;
         }
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
@@ -62,7 +74,32 @@ internal sealed class OpenAiCompatibleClient
             this.monitor.Log($"LLM HTTP {(int)response.StatusCode} ({response.StatusCode}).", LogLevel.Warn);
             throw new LlmHttpException(response.StatusCode, body);
         }
-        return JsonDocument.Parse(body);
+        JsonDocument document = JsonDocument.Parse(body);
+        LogUsage(document);
+        return document;
+    }
+
+    /// <summary>Logs the token usage the API attaches to every response, for diagnostics/tuning.</summary>
+    private void LogUsage(JsonDocument document)
+    {
+        if (!document.RootElement.TryGetProperty("usage", out JsonElement usage)
+            || usage.ValueKind != JsonValueKind.Object)
+            return;
+
+        int Read(string name) => usage.TryGetProperty(name, out JsonElement value)
+            && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : -1;
+
+        int prompt = Read("prompt_tokens");
+        int completion = Read("completion_tokens");
+        int total = Read("total_tokens");
+        int reasoning = usage.TryGetProperty("completion_tokens_details", out JsonElement details)
+            && details.ValueKind == JsonValueKind.Object
+            && details.TryGetProperty("reasoning_tokens", out JsonElement r)
+            && r.ValueKind == JsonValueKind.Number ? r.GetInt32() : -1;
+
+        this.monitor.Log(
+            $"LLM usage: prompt={prompt} completion={completion} (reasoning={reasoning}) total={total}, max_tokens={this.settings.MaxResponseTokens}.",
+            LogLevel.Debug);
     }
 }
 

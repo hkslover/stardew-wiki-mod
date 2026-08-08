@@ -10,8 +10,9 @@ public sealed class ModConfig
     public string Model { get; set; } = "deepseek-v4-flash";
     public string WikiApiUrl { get; set; } = "https://zh.stardewvalleywiki.com/mediawiki/api.php";
     public int RequestTimeoutSeconds { get; set; } = 90;
-    public int MaxAgentSteps { get; set; } = 6;
+    public int MaxAgentSteps { get; set; } = 8;
     public int MaxAnswerCharacters { get; set; } = 1800;
+    public int MaxResponseTokens { get; set; } = 2048;
     public bool IncludeGameContext { get; set; } = true;
     public bool EnableQuestLogTool { get; set; } = true;
 
@@ -24,13 +25,18 @@ public sealed class ModConfig
         }
         if (this.MaxAgentSteps is < 1 or > 12)
         {
-            monitor.Log("MaxAgentSteps must be between 1 and 12; using 6.", LogLevel.Warn);
-            this.MaxAgentSteps = 6;
+            monitor.Log("MaxAgentSteps must be between 1 and 12; using 8.", LogLevel.Warn);
+            this.MaxAgentSteps = 8;
         }
         if (this.MaxAnswerCharacters is < 200 or > 8000)
         {
             monitor.Log("MaxAnswerCharacters must be between 200 and 8000; using 1800.", LogLevel.Warn);
             this.MaxAnswerCharacters = 1800;
+        }
+        if (this.MaxResponseTokens is < 256 or > 8192)
+        {
+            monitor.Log("MaxResponseTokens must be between 256 and 8192; using 2048.", LogLevel.Warn);
+            this.MaxResponseTokens = 2048;
         }
     }
 }

@@ -31,7 +31,7 @@ internal sealed class MediaWikiClient
     public async Task<string> SearchAsync(string query, int limit, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query))
-            return JsonSerializer.Serialize(new { error = "query 不能为空" }, JsonOptions);
+            return JsonSerializer.Serialize(new { error = "query must not be empty" }, JsonOptions);
 
         JsonDocument data = await this.GetAsync(new Dictionary<string, string>
         {
@@ -47,7 +47,7 @@ internal sealed class MediaWikiClient
         {
             if (!data.RootElement.TryGetProperty("query", out JsonElement queryElement)
                 || !queryElement.TryGetProperty("search", out JsonElement results))
-                return JsonSerializer.Serialize(new { error = "Wiki 没有返回搜索结果" }, JsonOptions);
+                return JsonSerializer.Serialize(new { error = "the Wiki returned no search results" }, JsonOptions);
 
             var output = new List<object>();
             foreach (JsonElement result in results.EnumerateArray())
@@ -68,7 +68,7 @@ internal sealed class MediaWikiClient
     public async Task<string> ReadAsync(string page, string? section, string? focus, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(page))
-            return JsonSerializer.Serialize(new { error = "page 不能为空" }, JsonOptions);
+            return JsonSerializer.Serialize(new { error = "page must not be empty" }, JsonOptions);
 
         string? sectionIndex = null;
         if (!string.IsNullOrWhiteSpace(section) && section != "0" && !int.TryParse(section, out _))
@@ -96,7 +96,7 @@ internal sealed class MediaWikiClient
                 {
                     title = page,
                     sections = list,
-                    hint = "请根据相关章节标题再次调用 wiki_read；section=0 可读取简介。",
+                    hint = "Call wiki_read again with the relevant section title; use section=0 to read the intro.",
                     source = PageUrl(page)
                 }, JsonOptions);
             }
@@ -172,9 +172,9 @@ internal sealed class MediaWikiClient
     private static string ErrorForPage(string page, JsonElement root)
     {
         string message = root.TryGetProperty("error", out JsonElement error)
-            ? GetString(error, "info", GetString(error, "message", "页面不存在或 Wiki 返回错误"))
-            : "页面不存在或 Wiki 没有返回正文";
-        return JsonSerializer.Serialize(new { error = $"无法读取页面「{page}」：{message}" }, JsonOptions);
+            ? GetString(error, "info", GetString(error, "message", "page does not exist or the Wiki returned an error"))
+            : "page does not exist or the Wiki returned no body text";
+        return JsonSerializer.Serialize(new { error = $"could not read page \"{page}\": {message}" }, JsonOptions);
     }
 
     private static string LimitText(string text, string? focus)
@@ -189,10 +189,10 @@ internal sealed class MediaWikiClient
             if (selected.Count > 0)
             {
                 string focused = string.Join("\n\n", selected);
-                return focused[..Math.Min(max, focused.Length)] + "\n[按问题关键词截取]";
+                return focused[..Math.Min(max, focused.Length)] + "\n[excerpted by question keyword]";
             }
         }
-        return text[..max] + "\n[正文过长，已截取]";
+        return text[..max] + "\n[body too long, truncated]";
     }
 
     private static string StripHtml(string html)
