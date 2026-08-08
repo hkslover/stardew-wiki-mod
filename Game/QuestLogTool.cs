@@ -13,11 +13,11 @@ internal sealed class QuestLogTool : IAgentTool
 
     public string Name => "get_quest_log";
     public string Description =>
-        "按需读取当前玩家游戏内任务日志中的任务标题、说明、当前目标、完成状态、剩余天数和奖励。" +
-        "仅当玩家提到自己的任务、日志、任务进度或下一步该做什么时调用；不要把它当作 SMAPI 调试日志。" +
-        "query 可传任务名称或简短关键词以减少返回内容，不确定具体名称时留空读取全部当前任务。";
+        "Read the player's in-game quest journal on demand: quest titles, descriptions, current objectives, completion status, days left, and rewards. " +
+        "Call it only when the player mentions their own quests, journal, quest progress, or what to do next; this is NOT the SMAPI debug log. " +
+        "Pass 'query' with a quest title or short keyword to narrow the results; leave it empty to read all current quests when unsure of the exact name.";
     public string ParametersSchemaJson =>
-        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"可选的任务名称或简短关键词；留空表示当前全部任务\"}}}";
+        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Optional quest title or short keyword; leave empty for all current quests.\"}}}";
     public ToolExecutionAffinity ExecutionAffinity => ToolExecutionAffinity.MainThreadReadOnly;
 
     public Task<string> ExecuteAsync(
@@ -40,7 +40,7 @@ internal sealed class QuestLogTool : IAgentTool
         catch (JsonException)
         {
             return Task.FromResult(JsonSerializer.Serialize(
-                new { error = "参数不是有效的 JSON。" },
+                new { error = "arguments are not valid JSON." },
                 GameToolJson.Options
             ));
         }
@@ -83,7 +83,7 @@ internal sealed class QuestLogTool : IAgentTool
                 unreadableQuests,
                 quests = Array.Empty<object>(),
                 availableTitles = allQuests.Select(quest => quest.Title).ToArray(),
-                message = "没有匹配该关键词的任务；可根据 availableTitles 选择更准确的关键词，或留空读取全部当前任务。"
+                message = "No quest matched that keyword; pick a more precise keyword from availableTitles, or leave query empty to read all current quests."
             };
 
         return Task.FromResult(JsonSerializer.Serialize(result, GameToolJson.Options));

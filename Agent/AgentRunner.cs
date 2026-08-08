@@ -54,7 +54,7 @@ internal sealed class AgentRunner
             {
                 ["role"] = "user",
                 ["content"] = this.settings.IncludeGameContext
-                    ? $"玩家问题：{question}\n当前游戏上下文（仅时间地点等基本信息；背包/技能/好感度等请调用对应工具获取）：{context.ToCompactPromptText()}"
+                    ? $"Player question: {question}\nCurrent game context (basic time/place info only; call the matching tool for inventory/skills/relationships/etc.): {context.ToCompactPromptText()}"
                     : question
             }
         };

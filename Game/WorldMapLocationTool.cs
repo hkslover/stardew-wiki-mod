@@ -14,10 +14,10 @@ internal sealed class WorldMapLocationTool : IAgentTool
 
     public string Name => ToolName;
     public string Description =>
-        "在当前游戏实际加载的世界地图数据中查找地点。玩家询问某个地点在哪里、怎么走或要求指路时调用；" +
-        "query 应使用 Wiki 确认后的中文地点名称。唯一匹配时会返回可用于显示方向箭头的 navigation 目标。";
+        "Look up a place in the game's currently loaded world-map data. Call it when the player asks where a place is, how to get there, or for directions. " +
+        "'query' must be the Wiki-confirmed Chinese place name. A unique match returns a navigation target that starts an on-screen direction arrow.";
     public string ParametersSchemaJson =>
-        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Wiki 确认后的地点名称，例如矿井\"}},\"required\":[\"query\"]}";
+        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"The Wiki-confirmed Chinese place name, e.g. 矿井 (the Mines).\"}},\"required\":[\"query\"]}";
     public ToolExecutionAffinity ExecutionAffinity => ToolExecutionAffinity.MainThreadReadOnly;
 
     public Task<string> ExecuteAsync(
@@ -34,7 +34,7 @@ internal sealed class WorldMapLocationTool : IAgentTool
                 ? queryElement.GetString()?.Trim() ?? ""
                 : "";
         if (query.Length == 0)
-            return Task.FromResult(JsonSerializer.Serialize(new { error = "query 不能为空" }, GameToolJson.Options));
+            return Task.FromResult(JsonSerializer.Serialize(new { error = "query must not be empty" }, GameToolJson.Options));
 
         string normalizedQuery = Normalize(query);
         var candidates = new List<LocationCandidate>();
@@ -104,8 +104,8 @@ internal sealed class WorldMapLocationTool : IAgentTool
                 results,
                 navigation = (object?)null,
                 message = ranked.Length == 0
-                    ? "当前游戏世界地图中没有找到对应地点，不能启动箭头导航。"
-                    : "找到多个同等匹配的地点，请先向玩家确认具体目标。"
+                    ? "No matching place was found in the current world map, so no arrow navigation was started."
+                    : "Several equally-matching places were found; ask the player to confirm which one they mean."
             }, GameToolJson.Options));
         }
 
