@@ -31,9 +31,12 @@ internal sealed class OpenAiCompatibleClient
         {
             ["model"] = this.settings.Model,
             ["messages"] = messages,
-            // max_tokens caps output tokens only (not characters): DeepSeek counts
-            // ~0.6 token per Chinese character, and thinking-mode reasoning_tokens
-            // draw from the same budget, so this is a token count, not MaxAnswerCharacters.
+            // max_tokens caps the final answer's output tokens only (not characters,
+            // and — per DeepSeek's spec — not the separate CoT/reasoning_tokens, which
+            // are counted independently). DeepSeek counts ~0.6 token per Chinese
+            // character, so this is a token budget for the reply, decoupled from
+            // MaxAnswerCharacters. (Actual behavior depends on the gateway; see the
+            // usage log in LogUsage to confirm on a specific endpoint.)
             ["max_tokens"] = this.settings.MaxResponseTokens
         };
         // An empty tool list means the caller wants a tools-free completion (the
