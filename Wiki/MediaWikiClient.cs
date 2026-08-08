@@ -11,7 +11,14 @@ internal sealed class MediaWikiClient
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
+    // StripHtml runs on large wiki HTML per read; compile the patterns once.
+    private static readonly Regex TagRegex = new(
+        "<script[\\s\\S]*?</script>|<style[\\s\\S]*?</style>|<[^>]+>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+
     private readonly HttpClient http = new();
+    private readonly ResponseCache cache = new(capacity: 64);
     private readonly string apiUrl;
 
     public MediaWikiClient(string apiUrl, TimeSpan timeout)
@@ -145,9 +152,20 @@ internal sealed class MediaWikiClient
     {
         string query = string.Join("&", parameters.Select(pair =>
             $"{WebUtility.UrlEncode(pair.Key)}={WebUtility.UrlEncode(pair.Value)}"));
-        using HttpResponseMessage response = await this.http.GetAsync(this.apiUrl + "?format=json&formatversion=2&" + query, cancellationToken);
+        string requestUri = this.apiUrl + "?format=json&formatversion=2&" + query;
+
+        // Wiki content is effectively static for a session, so cache successful raw
+        // bodies. Only the string is cached; each caller parses its own disposable
+        // JsonDocument. This also collapses the duplicate section-list fetch (a
+        // named section that fails to resolve then falls back to the TOC branch)
+        // into a single network round-trip.
+        if (this.cache.TryGet(requestUri, out string cachedBody))
+            return JsonDocument.Parse(cachedBody);
+
+        using HttpResponseMessage response = await this.http.GetAsync(requestUri, cancellationToken);
         string body = await response.Content.ReadAsStringAsync(cancellationToken);
         response.EnsureSuccessStatusCode();
+        this.cache.Set(requestUri, body);
         return JsonDocument.Parse(body);
     }
 
@@ -179,9 +197,9 @@ internal sealed class MediaWikiClient
 
     private static string StripHtml(string html)
     {
-        string text = Regex.Replace(html ?? "", "<script[\\s\\S]*?</script>|<style[\\s\\S]*?</style>|<[^>]+>", " ", RegexOptions.IgnoreCase);
+        string text = TagRegex.Replace(html ?? "", " ");
         text = WebUtility.HtmlDecode(text);
-        return Regex.Replace(text, @"\s+", " ").Trim();
+        return WhitespaceRegex.Replace(text, " ").Trim();
     }
 
     private static string GetElementText(JsonElement element)
@@ -196,8 +214,64 @@ internal sealed class MediaWikiClient
             : fallback;
     }
 
-    private static string Normalize(string value) => Regex.Replace(value.Trim().ToLowerInvariant(), @"\s+", "");
+    private static string Normalize(string value) => WhitespaceRegex.Replace(value.Trim().ToLowerInvariant(), "");
 
     private static string PageUrl(string title) =>
         "https://zh.stardewvalleywiki.com/" + Uri.EscapeDataString(title).Replace("%2F", "/");
+
+    /// <summary>Small thread-safe LRU cache mapping a request URI to its raw response body.</summary>
+    private sealed class ResponseCache
+    {
+        private readonly int capacity;
+        private readonly object gate = new();
+        private readonly Dictionary<string, LinkedListNode<Entry>> map;
+        private readonly LinkedList<Entry> order = new();
+
+        public ResponseCache(int capacity)
+        {
+            this.capacity = Math.Max(1, capacity);
+            this.map = new Dictionary<string, LinkedListNode<Entry>>(this.capacity, StringComparer.Ordinal);
+        }
+
+        public bool TryGet(string key, out string value)
+        {
+            lock (this.gate)
+            {
+                if (this.map.TryGetValue(key, out LinkedListNode<Entry>? node))
+                {
+                    this.order.Remove(node);
+                    this.order.AddFirst(node);
+                    value = node.Value.Body;
+                    return true;
+                }
+            }
+            value = "";
+            return false;
+        }
+
+        public void Set(string key, string body)
+        {
+            lock (this.gate)
+            {
+                if (this.map.TryGetValue(key, out LinkedListNode<Entry>? existing))
+                {
+                    existing.Value = new Entry(key, body);
+                    this.order.Remove(existing);
+                    this.order.AddFirst(existing);
+                    return;
+                }
+
+                var node = new LinkedListNode<Entry>(new Entry(key, body));
+                this.map[key] = node;
+                this.order.AddFirst(node);
+                if (this.map.Count > this.capacity && this.order.Last is { } lru)
+                {
+                    this.order.RemoveLast();
+                    this.map.Remove(lru.Value.Key);
+                }
+            }
+        }
+
+        private readonly record struct Entry(string Key, string Body);
+    }
 }

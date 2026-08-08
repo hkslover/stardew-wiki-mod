@@ -12,6 +12,7 @@ internal sealed class AgentSettings
     public int MaxAgentSteps { get; private init; }
     public int MaxAnswerCharacters { get; private init; }
     public bool IncludeGameContext { get; private init; }
+    public bool IsDeepSeekV4 => this.Model.EndsWith("deepseek-v4-flash", StringComparison.OrdinalIgnoreCase);
     public bool IsConfigured => Uri.TryCreate(this.BaseUrl, UriKind.Absolute, out Uri? baseUri)
         && (baseUri.Scheme == Uri.UriSchemeHttp || baseUri.Scheme == Uri.UriSchemeHttps)
         && !string.IsNullOrWhiteSpace(this.Model);

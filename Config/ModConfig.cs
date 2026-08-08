@@ -7,7 +7,7 @@ public sealed class ModConfig
 {
     public string BaseUrl { get; set; } = "http://localhost:8317/v1";
     public string ApiKey { get; set; } = "";
-    public string Model { get; set; } = "gpt-5.4-mini";
+    public string Model { get; set; } = "deepseek-v4-flash";
     public string WikiApiUrl { get; set; } = "https://zh.stardewvalleywiki.com/mediawiki/api.php";
     public int RequestTimeoutSeconds { get; set; } = 90;
     public int MaxAgentSteps { get; set; } = 6;

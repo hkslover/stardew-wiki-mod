@@ -61,6 +61,10 @@ internal sealed class AgentRunner
         var sources = new List<string>();
         NavigationTarget? navigationTarget = null;
 
+        // The tool set is stable for the duration of a request; build the OpenAI
+        // definitions once instead of re-parsing every tool's schema on each step.
+        IReadOnlyList<object> toolDefinitions = this.tools.OpenAiDefinitions();
+
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(this.settings.RequestTimeout);
 
@@ -70,12 +74,12 @@ internal sealed class AgentRunner
             JsonDocument response;
             try
             {
-                response = await this.client.CompleteAsync(messages, this.tools.OpenAiDefinitions(), toolChoice, timeout.Token);
+                response = await this.client.CompleteAsync(messages, toolDefinitions, toolChoice, timeout.Token);
             }
             catch (LlmHttpException ex) when (step == 0 && ex.ResponseStatusCode is HttpStatusCode.BadRequest or HttpStatusCode.NotFound)
             {
                 this.monitor.Log("LLM endpoint rejected tool_choice=required; retrying with auto.", LogLevel.Debug);
-                response = await this.client.CompleteAsync(messages, this.tools.OpenAiDefinitions(), "auto", timeout.Token);
+                response = await this.client.CompleteAsync(messages, toolDefinitions, "auto", timeout.Token);
             }
 
             using (response)
@@ -88,6 +92,10 @@ internal sealed class AgentRunner
                 JsonElement toolCalls = message.TryGetProperty("tool_calls", out JsonElement calls) ? calls : default;
 
                 var assistant = new Dictionary<string, object?> { ["role"] = "assistant", ["content"] = content };
+                if (message.TryGetProperty("reasoning_content", out JsonElement reasoningContent))
+                    assistant["reasoning_content"] = reasoningContent.ValueKind == JsonValueKind.String
+                        ? reasoningContent.GetString()
+                        : null;
                 if (toolCalls.ValueKind == JsonValueKind.Array && toolCalls.GetArrayLength() > 0)
                     assistant["tool_calls"] = JsonSerializer.Deserialize<object>(toolCalls.GetRawText());
                 messages.Add(assistant);
@@ -96,7 +104,7 @@ internal sealed class AgentRunner
                     return new AgentAnswer
                     {
                         Text = Limit(content),
-                        Sources = sources.Distinct().ToArray(),
+                        Sources = sources.ToArray(),
                         NavigationTarget = navigationTarget
                     };
 
@@ -127,7 +135,7 @@ internal sealed class AgentRunner
         return new AgentAnswer
         {
             Text = "查询步骤过多，暂时无法生成答案，请换一种问法重试。",
-            Sources = sources,
+            Sources = sources.ToArray(),
             NavigationTarget = navigationTarget
         };
     }
@@ -139,21 +147,27 @@ internal sealed class AgentRunner
         return text[..this.settings.MaxAnswerCharacters] + "…";
     }
 
-    private static void AddSources(string json, ICollection<string> sources)
+    private static void AddSources(string json, List<string> sources)
     {
         try
         {
             using JsonDocument document = JsonDocument.Parse(json);
             if (document.RootElement.TryGetProperty("source", out JsonElement source)
                 && source.ValueKind == JsonValueKind.String)
-                sources.Add(source.GetString()!);
+                AddUnique(sources, source.GetString()!);
             if (document.RootElement.TryGetProperty("sources", out JsonElement many)
                 && many.ValueKind == JsonValueKind.Array)
                 foreach (JsonElement item in many.EnumerateArray())
                     if (item.ValueKind == JsonValueKind.String)
-                        sources.Add(item.GetString()!);
+                        AddUnique(sources, item.GetString()!);
         }
         catch (JsonException) { }
+    }
+
+    private static void AddUnique(List<string> sources, string value)
+    {
+        if (!sources.Contains(value))
+            sources.Add(value);
     }
 }
 
