@@ -26,6 +26,8 @@
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</RuntimeIdentifier>
+    <!-- Keep the managed SMAPI mod portable; the RID only selects platform-specific native speech assets. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <SelfContained>false</SelfContained>
     <!-- Preserve the existing bin/{Configuration}/net6.0 layout expected by the build scripts. -->
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
