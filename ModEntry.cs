@@ -1,3 +1,5 @@
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Input;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
@@ -9,6 +11,7 @@ using StardewWikiAgent.Config;
 using StardewWikiAgent.Game;
 using StardewWikiAgent.Speech;
 using StardewWikiAgent.Threading;
+using StardewWikiAgent.UI;
 using StardewWikiAgent.Wiki;
 
 namespace StardewWikiAgent;
@@ -16,9 +19,14 @@ namespace StardewWikiAgent;
 /// <summary>The SMAPI entry point for the Stardew Wiki AI Agent.</summary>
 internal sealed class ModEntry : Mod
 {
+    private const string OnboardingDataKey = "first-use-guide-v1";
+
     private MainThreadDispatcher mainThread = null!;
-    private SemaphoreSlim requestGate = new(1, 1);
-    private CancellationTokenSource requestCancellation = new();
+    private readonly SemaphoreSlim requestGate = new(1, 1);
+    private readonly object requestStateLock = new();
+    private CancellationTokenSource? activeRequestCancellation;
+    private DateTimeOffset activeRequestStartedAt;
+    private int requestGeneration;
     private ModConfig config = new();
     private AgentRunner? agent;
     private AgentToolRegistry? tools;
@@ -60,6 +68,11 @@ internal sealed class ModEntry : Mod
             "swai_ask",
             "Ask the AI agent from the SMAPI console (useful for diagnostics).",
             (_, args) => this.HandleConsoleAsk(args)
+        );
+        helper.ConsoleCommands.Add(
+            "swai_config",
+            "Open the vanilla-style Stardew Wiki AI Agent settings menu.",
+            (_, _) => this.QueueOpenConfigMenu()
         );
 
         this.greeter = new EasterEggGreeter(this.Monitor);
@@ -131,11 +144,42 @@ internal sealed class ModEntry : Mod
         string question = string.Join(" ", command.Skip(1)).Trim();
         if (question.Length == 0)
         {
-            chat.addInfoMessage("用法：/ask 你的问题，例如：/ask 这个季节适合种什么？");
+            this.ShowAskHelp(chat);
             return;
         }
 
-        if (question.Equals("stop", StringComparison.OrdinalIgnoreCase))
+        if (question.Equals("help", StringComparison.OrdinalIgnoreCase))
+        {
+            this.ShowAskHelp(chat);
+            return;
+        }
+
+        if (question.Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            this.ShowAskStatus(chat);
+            return;
+        }
+
+        if (question.Equals("config", StringComparison.OrdinalIgnoreCase))
+        {
+            chat.addInfoMessage("正在打开 AI 助手设置…");
+            this.QueueOpenConfigMenu(chat);
+            return;
+        }
+
+        if (question.Equals("stop", StringComparison.OrdinalIgnoreCase)
+            || question.Equals("cancel", StringComparison.OrdinalIgnoreCase))
+        {
+            bool cancelled = this.CancelActiveRequest();
+            chat.addInfoMessage(
+                cancelled
+                    ? "已取消当前 AI 查询；它不会再显示答案或启动导航。"
+                    : "当前没有正在进行的 AI 查询。"
+            );
+            return;
+        }
+
+        if (question.Equals("nav stop", StringComparison.OrdinalIgnoreCase))
         {
             Interlocked.Increment(ref this.navigationGeneration);
             bool stopped = this.navigation.Stop();
@@ -143,7 +187,101 @@ internal sealed class ModEntry : Mod
             return;
         }
 
+        if (question.Equals("nav", StringComparison.OrdinalIgnoreCase))
+        {
+            chat.addInfoMessage("导航命令：/ask nav stop（停止当前导航）。");
+            return;
+        }
+
         this.StartAskRequest(question, chat);
+    }
+
+    private void ShowAskHelp(ChatBox chat)
+    {
+        chat.addInfoMessage("提问：/ask 你的问题（例如：/ask 春天种什么？）");
+        chat.addInfoMessage("控制：/ask stop 取消查询；/ask nav stop 停止导航；/ask status 查看状态。");
+        chat.addInfoMessage("设置：/ask config 打开配置；/ask help 查看本帮助。");
+    }
+
+    private void QueueOpenConfigMenu(ChatBox? chat = null)
+    {
+        this.mainThread.Enqueue(() =>
+        {
+            IClickableMenu? returnMenu = Game1.activeClickableMenu;
+            if (returnMenu is not null && returnMenu is not TitleMenu)
+            {
+                const string message = "请先关闭当前菜单，再打开 AI 助手设置。";
+                if (chat is not null)
+                    chat.addInfoMessage(message);
+                else
+                    this.Monitor.Log(message, LogLevel.Info);
+                return;
+            }
+
+            void RestorePreviousMenu()
+            {
+                if (returnMenu is null)
+                    return;
+
+                // exitThisMenu clears the active menu after invoking callbacks, so
+                // restore the title screen on the next game tick.
+                this.mainThread.Enqueue(() =>
+                {
+                    if (Game1.activeClickableMenu is null)
+                        Game1.activeClickableMenu = returnMenu;
+                });
+            }
+
+            Game1.activeClickableMenu = new ModConfigMenu(
+                this.config,
+                updated =>
+                {
+                    try
+                    {
+                        updated.Validate(this.Monitor);
+                        this.Helper.WriteConfig(updated);
+                        this.config = updated;
+                        Game1.addHUDMessage(HUDMessage.ForCornerTextbox("AI 助手设置已保存；重启 SMAPI 后全部生效。"));
+                    }
+                    catch (Exception ex)
+                    {
+                        this.Monitor.Log("Failed to save the in-game configuration: " + ex, LogLevel.Error);
+                        Game1.addHUDMessage(HUDMessage.ForCornerTextbox("设置保存失败，请查看 SMAPI 日志。"));
+                    }
+                    finally
+                    {
+                        RestorePreviousMenu();
+                    }
+                },
+                RestorePreviousMenu
+            );
+        });
+    }
+
+    private void ShowAskStatus(ChatBox chat)
+    {
+        string requestStatus;
+        lock (this.requestStateLock)
+        {
+            if (this.activeRequestCancellation is null)
+            {
+                requestStatus = "空闲";
+            }
+            else if (this.activeRequestCancellation.IsCancellationRequested)
+            {
+                requestStatus = "正在取消";
+            }
+            else
+            {
+                int elapsedSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - this.activeRequestStartedAt).TotalSeconds);
+                requestStatus = $"查询中（{elapsedSeconds} 秒）";
+            }
+        }
+
+        string navigationStatus = this.navigation.IsActive
+            ? $"正在前往 {this.navigation.TargetName ?? "目标地点"}"
+            : "未启用";
+        chat.addInfoMessage($"AI 查询：{requestStatus}；导航：{navigationStatus}。");
     }
 
     /// <summary>Run the agent for a question and present the answer. Shared by the chat command and voice input.</summary>
@@ -161,42 +299,49 @@ internal sealed class ModEntry : Mod
             return;
         }
 
-        if (!this.requestGate.Wait(0))
+        GameContextSnapshot context = GameContextSnapshot.Capture();
+        RequestLease? request = this.TryStartRequest();
+        if (request is null)
         {
-            chat.addInfoMessage("上一条问题还在查询中，请稍等片刻。");
+            chat.addInfoMessage("上一条问题还在查询中；可用 /ask cancel 取消。");
             return;
         }
 
-        GameContextSnapshot context = GameContextSnapshot.Capture();
         int navigationGeneration = Volatile.Read(ref this.navigationGeneration);
         chat.addInfoMessage("正在分析并检索 Wiki…");
-        CancellationToken requestToken = this.requestCancellation.Token;
 
         _ = Task.Run(async () =>
         {
             try
             {
-                AgentAnswer answer = await this.agent.AskAsync(question, context, requestToken);
+                AgentAnswer answer = await this.agent.AskAsync(question, context, request.Token);
                 this.mainThread.Enqueue(() =>
                 {
+                    if (!this.IsRequestCurrent(request))
+                        return;
+
                     if (answer.NavigationTarget is not null
                         && navigationGeneration == Volatile.Read(ref this.navigationGeneration))
                         this.navigation.Start(answer.NavigationTarget);
                     ChatAnswerPresenter.Show(chat, answer.Text, answer.Sources);
                 });
             }
-            catch (OperationCanceledException) when (requestToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (request.Token.IsCancellationRequested)
             {
-                this.Monitor.Log("AI request cancelled.", LogLevel.Debug);
+                this.Monitor.Log("AI 查询已取消。", LogLevel.Debug);
             }
             catch (Exception ex)
             {
                 this.Monitor.Log("AI request failed: " + ex, LogLevel.Error);
-                this.mainThread.Enqueue(() => ChatAnswerPresenter.ShowError(chat, ToFriendlyError(ex)));
+                this.mainThread.Enqueue(() =>
+                {
+                    if (this.IsRequestCurrent(request))
+                        ChatAnswerPresenter.ShowError(chat, ToFriendlyError(ex));
+                });
             }
             finally
             {
-                this.requestGate.Release();
+                this.CompleteRequest(request);
             }
         });
     }
@@ -214,7 +359,14 @@ internal sealed class ModEntry : Mod
             this.Monitor.Log("AI agent is not initialized.", LogLevel.Error);
             return;
         }
-        CancellationToken requestToken = this.requestCancellation.Token;
+
+        RequestLease? request = this.TryStartRequest();
+        if (request is null)
+        {
+            this.Monitor.Log("上一条 AI 查询仍在进行中；请等待完成或在游戏聊天中使用 /ask cancel。", LogLevel.Info);
+            return;
+        }
+
         _ = Task.Run(async () =>
         {
             try
@@ -222,19 +374,77 @@ internal sealed class ModEntry : Mod
                 // SMAPI runs console commands on its own input thread, so capture the
                 // live game state on the main update loop before touching Game1.
                 GameContextSnapshot context = await this.mainThread.InvokeAsync(GameContextSnapshot.Capture);
-                AgentAnswer answer = await this.agent.AskAsync(question, context, requestToken);
+                AgentAnswer answer = await this.agent.AskAsync(question, context, request.Token);
                 this.mainThread.Enqueue(() =>
                 {
+                    if (!this.IsRequestCurrent(request))
+                        return;
+
                     this.Monitor.Log("AI answer: " + answer.Text, LogLevel.Info);
                     if (answer.Sources.Count > 0)
                         this.Monitor.Log("Sources: " + string.Join(" | ", answer.Sources), LogLevel.Info);
                 });
             }
+            catch (OperationCanceledException) when (request.Token.IsCancellationRequested)
+            {
+                this.Monitor.Log("控制台 AI 查询已取消。", LogLevel.Debug);
+            }
             catch (Exception ex)
             {
                 this.Monitor.Log("Console AI request failed: " + ex, LogLevel.Error);
             }
+            finally
+            {
+                this.CompleteRequest(request);
+            }
         });
+    }
+
+    private RequestLease? TryStartRequest()
+    {
+        if (!this.requestGate.Wait(0))
+            return null;
+
+        var cancellation = new CancellationTokenSource();
+        lock (this.requestStateLock)
+        {
+            int generation = Interlocked.Increment(ref this.requestGeneration);
+            this.activeRequestCancellation = cancellation;
+            this.activeRequestStartedAt = DateTimeOffset.UtcNow;
+            return new RequestLease(generation, cancellation, cancellation.Token);
+        }
+    }
+
+    private bool CancelActiveRequest()
+    {
+        lock (this.requestStateLock)
+        {
+            // Invalidate even an already-completed response whose main-thread callback
+            // has not run yet, so /ask cancel can never show a stale answer or restart navigation.
+            Interlocked.Increment(ref this.requestGeneration);
+            if (this.activeRequestCancellation is null)
+                return false;
+
+            this.activeRequestCancellation.Cancel();
+            return true;
+        }
+    }
+
+    private bool IsRequestCurrent(RequestLease request)
+    {
+        return !request.Token.IsCancellationRequested
+            && request.Generation == Volatile.Read(ref this.requestGeneration);
+    }
+
+    private void CompleteRequest(RequestLease request)
+    {
+        lock (this.requestStateLock)
+        {
+            if (ReferenceEquals(this.activeRequestCancellation, request.Cancellation))
+                this.activeRequestCancellation = null;
+            request.Cancellation.Dispose();
+        }
+        this.requestGate.Release();
     }
 
     /// <summary>Load the local speech model and open the microphone on a background thread.</summary>
@@ -311,7 +521,7 @@ internal sealed class ModEntry : Mod
                     this.OnVoiceTranscribed
                 );
                 this.Monitor.Log(
-                    $"Voice input ready. Press {this.voiceHotkey} to start/stop recording (Chinese speech-to-text).",
+                    $"Voice input ready. Hold {this.voiceHotkey} to record and release it to transcribe (Chinese speech-to-text).",
                     LogLevel.Info
                 );
             });
@@ -338,33 +548,92 @@ internal sealed class ModEntry : Mod
         if (Game1.chatBox is { } chatBox && chatBox.isActive())
             return;
 
-        // Starting requires a free player; stopping an in-progress recording is always allowed.
-        if (!this.voice.IsRecording && !Context.IsPlayerFree)
+        // Starting requires a free player. A press while transcription is running is
+        // still consumed so the voice hotkey never leaks through to gameplay.
+        if (!this.voice.IsRecording && !this.voice.IsTranscribing && !Context.IsPlayerFree)
             return;
 
+        // Suppressing the press keeps the key out of gameplay for the whole hold: SMAPI keeps
+        // the button in its released-override set until it is physically let go. We must NOT
+        // rely on SMAPI's ButtonReleased for the end of the hold, though — that same override
+        // makes SMAPI report the still-held key as "released" on the very next tick. Instead we
+        // poll the real hardware state each tick in OnUpdateTicked (see EndVoiceRecordingIfKeyReleased).
         this.Helper.Input.Suppress(e.Button);
-        this.voice.Toggle();
+        this.voice.BeginRecording();
     }
 
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
     {
         this.mainThread.Drain(8);
+        this.voice?.Update();
+        this.EndVoiceRecordingIfKeyReleased();
         this.navigation.Update(e);
+    }
+
+    /// <summary>
+    /// End a hold-to-talk recording once the hotkey is physically released. SMAPI's suppressed
+    /// button state can't be trusted here, so this reads the raw MonoGame device state directly.
+    /// </summary>
+    private void EndVoiceRecordingIfKeyReleased()
+    {
+        if (this.voice is not { IsAvailable: true, IsRecording: true })
+            return;
+
+        if (!IsButtonPhysicallyDown(this.voiceHotkey))
+            this.voice.EndRecording();
+    }
+
+    /// <summary>Read the true hardware state of a button, bypassing SMAPI's input overrides.</summary>
+    private static bool IsButtonPhysicallyDown(SButton button)
+    {
+        if (button.TryGetKeyboard(out Keys key))
+            return Keyboard.GetState().IsKeyDown(key);
+
+        if (button.TryGetController(out Buttons controllerButton))
+            return GamePad.GetState(PlayerIndex.One).IsButtonDown(controllerButton);
+
+        MouseState mouse = Mouse.GetState();
+        return button switch
+        {
+            SButton.MouseLeft => mouse.LeftButton == ButtonState.Pressed,
+            SButton.MouseRight => mouse.RightButton == ButtonState.Pressed,
+            SButton.MouseMiddle => mouse.MiddleButton == ButtonState.Pressed,
+            SButton.MouseX1 => mouse.XButton1 == ButtonState.Pressed,
+            SButton.MouseX2 => mouse.XButton2 == ButtonState.Pressed,
+            _ => false,
+        };
     }
 
     private void OnSaveLoaded(object? sender, SaveLoadedEventArgs e)
     {
         this.Monitor.Log("Game context is ready for AI queries.", LogLevel.Debug);
+
+        try
+        {
+            FirstUseState? state = this.Helper.Data.ReadGlobalData<FirstUseState>(OnboardingDataKey);
+            if (state?.Shown == true)
+                return;
+
+            Game1.addHUDMessage(HUDMessage.ForCornerTextbox("Stardew Wiki AI 助手已就绪：在聊天框输入 /ask help 查看用法。"));
+            string secondTip = this.config.EnableVoiceInput
+                ? $"按住 {this.voiceHotkey} 说话，松开后识别；输入 /ask config 可打开设置。"
+                : "输入 /ask config 可打开原版风格设置菜单。";
+            Game1.addHUDMessage(HUDMessage.ForCornerTextbox(secondTip));
+            this.Helper.Data.WriteGlobalData(OnboardingDataKey, new FirstUseState { Shown = true });
+        }
+        catch (Exception ex)
+        {
+            this.Monitor.Log("Failed to read or write the first-use guide state: " + ex.Message, LogLevel.Debug);
+        }
     }
 
     private void OnReturnedToTitle(object? sender, ReturnedToTitleEventArgs e)
     {
+        this.voice?.Cancel(notify: false);
+        this.CancelActiveRequest();
         Interlocked.Increment(ref this.navigationGeneration);
         this.navigation.Stop();
         this.navigation.Dispose();
-        this.requestCancellation.Cancel();
-        this.requestCancellation.Dispose();
-        this.requestCancellation = new CancellationTokenSource();
         this.mainThread.Clear();
         this.Monitor.Log("Returned to title; pending UI callbacks were cleared.", LogLevel.Debug);
     }
@@ -389,5 +658,16 @@ internal sealed class ModEntry : Mod
         if (ex is TaskCanceledException)
             return "查询超时，请稍后重试。";
         return "查询失败，请查看 SMAPI 日志中的详细错误。";
+    }
+
+    private sealed record RequestLease(
+        int Generation,
+        CancellationTokenSource Cancellation,
+        CancellationToken Token
+    );
+
+    private sealed class FirstUseState
+    {
+        public bool Shown { get; set; }
     }
 }

@@ -22,9 +22,20 @@ internal sealed class VoiceRecorder : IDisposable
 
     private PortAudioSharp.Stream? stream;
     private bool portAudioReady;
+    private bool reachedMaxDuration;
 
     public bool IsAvailable { get; private set; }
     public bool IsRecording { get; private set; }
+
+    /// <summary>Whether the current recording filled the configured audio buffer.</summary>
+    public bool HasReachedMaxDuration
+    {
+        get
+        {
+            lock (this.sync)
+                return this.reachedMaxDuration;
+        }
+    }
 
     public VoiceRecorder(int sampleRate, int maxSeconds, IMonitor monitor)
     {
@@ -62,8 +73,13 @@ internal sealed class VoiceRecorder : IDisposable
             Marshal.Copy(input, samples, 0, (int)frameCount);
             lock (this.sync)
             {
-                if (this.buffer.Count < this.maxSamples)
-                    this.buffer.AddRange(samples);
+                int remaining = this.maxSamples - this.buffer.Count;
+                int samplesToKeep = Math.Min(samples.Length, Math.Max(0, remaining));
+                for (int i = 0; i < samplesToKeep; i++)
+                    this.buffer.Add(samples[i]);
+
+                if (this.buffer.Count >= this.maxSamples)
+                    this.reachedMaxDuration = true;
             }
         }
 
@@ -79,7 +95,10 @@ internal sealed class VoiceRecorder : IDisposable
         try
         {
             lock (this.sync)
+            {
                 this.buffer.Clear();
+                this.reachedMaxDuration = false;
+            }
 
             int device = PortAudio.DefaultInputDevice;
             DeviceInfo info = PortAudio.GetDeviceInfo(device);
@@ -128,18 +147,25 @@ internal sealed class VoiceRecorder : IDisposable
 
     private void SafeCloseStream()
     {
+        PortAudioSharp.Stream? current = this.stream;
+        this.stream = null;
+
         try
         {
-            this.stream?.Stop();
-            this.stream?.Dispose();
+            current?.Stop();
         }
         catch (Exception ex)
         {
-            this.monitor.Log("Failed to close the audio stream cleanly: " + ex, LogLevel.Trace);
+            this.monitor.Log("Failed to stop the audio stream cleanly: " + ex, LogLevel.Trace);
         }
-        finally
+
+        try
         {
-            this.stream = null;
+            current?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            this.monitor.Log("Failed to dispose the audio stream cleanly: " + ex, LogLevel.Trace);
         }
     }
 

@@ -23,13 +23,13 @@ NUGET_PACKAGES="$PWD/.nuget-packages" \
 
 ## Running & diagnostics
 
-- In-game chat: `/ask <问题>` (a collision-proof alias `/snow.StardewWikiAgent_ask` is always registered; the short `/ask` is only claimed if no other mod owns it). `/ask stop` immediately stops the current location navigation without calling the LLM.
+- In-game chat: `/ask <问题>` (a collision-proof alias `/snow.StardewWikiAgent_ask` is always registered; the short `/ask` is only claimed if no other mod owns it). `/ask stop` (alias `/ask cancel`) cancels the current agent request, `/ask nav stop` stops navigation, and `/ask config` opens the vanilla-style settings menu.
 - SMAPI console: `swai_status` prints config without secrets; `swai_ask <问题>` runs the agent and logs the answer + sources (diagnostics only).
 - A save must be loaded (`Context.IsWorldReady`) before `/ask` works.
 
 ## Configuration
 
-`config.json` is generated in the mod folder on first run (`ModConfig`). **Environment variables override file values** (`AgentSettings.From`): `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`, `STARDEW_WIKI_API_URL`. The Wiki URL is validated to stay on the `stardewvalleywiki.com` domain; anything else falls back to the official Chinese API. The LLM is considered configured only when `BaseUrl` is a valid http(s) URI and `Model` is non-empty.
+`config.json` is generated in the mod folder on first run (`ModConfig`). `/ask config` and the `swai_config` console command open a dependency-free `IClickableMenu` styled with the game's own fonts and textures; it exposes every `ModConfig` field and masks the API key. Saved settings are written immediately and fully apply after restarting SMAPI. **Environment variables override file values** (`AgentSettings.From`): `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`, `STARDEW_WIKI_API_URL`. The Wiki URL is validated to stay on the `stardewvalleywiki.com` domain; anything else falls back to the official Chinese API. The LLM is considered configured only when `BaseUrl` is a valid http(s) URI and `Model` is non-empty.
 
 ## Architecture
 
@@ -51,13 +51,15 @@ Built-in tools: `wiki_search` + `wiki_read` (`Wiki/`, `BackgroundReadOnly`, via 
 
 `NavigationService` consumes a resolved target only after the agent finishes, projects the local player's live tile through `WorldMapManager`, and draws a pulsing arrow near the player's feet through `Display.RenderedWorld`. It checks proximity every six update ticks, clears the target on arrival or return to title, and shows an arrival HUD message. Navigation state is local UI state; the location tool itself remains read-only.
 
+Voice input is hold-to-talk by default: pressing the configured key begins local recording, releasing it ends recording and starts offline transcription. `VoiceInputController.Update` enforces the configured maximum duration and discards stale results when leaving the save.
+
 ### Public extension API
 
 `ModEntry.GetApi()` returns `IStardewWikiAgentApi` (`Api/AgentContracts.cs`) so other SMAPI mods can `RegisterTool`/`RegisterAction`, list names, and call `AskAsync`. The `Api/`, `Game/GameContextSnapshot`, and `AgentAnswer` types are `public` because they cross the mod boundary; internal wiring (`AgentRunner`, registry, clients, dispatcher) is `internal`. Keep the public surface minimal and stable — changing it breaks dependent mods.
 
 ### Source layout
 
-`Api/` public contracts · `Agent/` LLM loop, tool registry, OpenAI-compatible HTTP adapter · `Wiki/` MediaWiki client + wiki tools · `Game/` context snapshot + live-state tools + easter-egg greeter · `Chat/` chat output formatting + Markdown-to-color · `Threading/` main-thread dispatcher · `Config/` config + resolved settings · `ModEntry.cs` entry point & command wiring.
+`Api/` public contracts · `Agent/` LLM loop, tool registry, OpenAI-compatible HTTP adapter · `Wiki/` MediaWiki client + wiki tools · `Game/` context snapshot + live-state tools + easter-egg greeter · `Chat/` chat output formatting + Markdown-to-color · `Speech/` offline hold-to-talk input · `UI/` vanilla-style config menu · `Threading/` main-thread dispatcher · `Config/` config + resolved settings · `ModEntry.cs` entry point & command wiring.
 
 There is also a private easter egg (`Game/EasterEggGreeter.cs` + `SteamIdentity.cs`): on `DayStarted` / evening `TimeChanged` (18:00) it shows a warm HUD greeting, but only for one **hardcoded** SteamID64 (`TargetSteamId` in `EasterEggGreeter`) — no config, no-op for everyone else. The Steam ID is read best-effort by reflecting into the game's `Steamworks.NET` assembly, so it silently no-ops on non-Steam builds.
 

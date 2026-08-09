@@ -5,10 +5,9 @@ using StardewWikiAgent.Threading;
 namespace StardewWikiAgent.Speech;
 
 /// <summary>
-/// Push-to-talk voice input: the hotkey toggles between recording and transcribing.
-/// The whole state machine lives on the game's main thread — <see cref="Toggle"/> is called
-/// from the SMAPI input event, and transcription results are marshaled back through the
-/// <see cref="MainThreadDispatcher"/> before advancing state — so no locking is needed here.
+/// Push-to-talk voice input. Pressing the hotkey begins recording and releasing it ends
+/// recording and starts transcription. Public state-machine methods must be called on the
+/// game thread; background transcription communicates through a small locked result slot.
 /// </summary>
 internal sealed class VoiceInputController : IDisposable
 {
@@ -23,8 +22,14 @@ internal sealed class VoiceInputController : IDisposable
     private readonly IMonitor monitor;
     private readonly Action<string> onTranscribed;
     private readonly string hotkeyLabel;
+    private readonly object sync = new();
 
     private VoiceState state = VoiceState.Idle;
+    private bool dropTranscriptionResult;
+    private bool transcriptionInProgress;
+    private bool transcriptionCompleted;
+    private bool isDisposed;
+    private string completedText = string.Empty;
 
     public VoiceInputController(
         VoiceRecorder recorder,
@@ -46,38 +51,159 @@ internal sealed class VoiceInputController : IDisposable
 
     public bool IsRecording => this.state == VoiceState.Recording;
 
-    /// <summary>Advance the push-to-talk state machine. Must be called on the main thread.</summary>
+    public bool IsTranscribing => this.state == VoiceState.Transcribing;
+
+    /// <summary>Begin push-to-talk recording. Must be called on the game thread.</summary>
+    /// <returns>Whether a new recording was started.</returns>
+    public bool BeginRecording()
+    {
+        return this.BeginRecording(toggleMode: false);
+    }
+
+    /// <summary>
+    /// End push-to-talk recording and start transcription. Must be called on the game thread.
+    /// </summary>
+    /// <returns>Whether an active recording was ended.</returns>
+    public bool EndRecording()
+    {
+        if (this.isDisposed || this.state != VoiceState.Recording)
+            return false;
+
+        this.FinishRecording(reachedTimeLimit: false);
+        return true;
+    }
+
+    /// <summary>
+    /// Maintain automatic time-limit and world-state handling. Call once per update tick on
+    /// the game thread, after draining the main-thread dispatcher.
+    /// </summary>
+    public void Update()
+    {
+        if (this.isDisposed)
+            return;
+
+        this.ProcessCompletedTranscription();
+
+        if (!Context.IsWorldReady)
+        {
+            this.Cancel(notify: false);
+            return;
+        }
+
+        if (this.state == VoiceState.Recording
+            && (!Context.IsPlayerFree
+                || Game1.activeClickableMenu is not null
+                || Game1.chatBox?.isActive() == true))
+        {
+            this.Cancel();
+            return;
+        }
+
+        if (this.state == VoiceState.Recording && this.recorder.HasReachedMaxDuration)
+            this.FinishRecording(reachedTimeLimit: true);
+    }
+
+    /// <summary>
+    /// Compatibility helper for an optional press-once-to-start, press-again-to-stop mode.
+    /// The default push-to-talk flow should use <see cref="BeginRecording"/> and
+    /// <see cref="EndRecording"/> directly.
+    /// </summary>
     public void Toggle()
     {
         switch (this.state)
         {
             case VoiceState.Idle:
-                if (!this.recorder.Start())
-                {
-                    Notify("无法启动麦克风，请检查系统录音权限。");
-                    return;
-                }
-                this.state = VoiceState.Recording;
-                Notify($"[录音中] 再次按 {this.hotkeyLabel} 结束");
+                this.BeginRecording(toggleMode: true);
                 break;
 
             case VoiceState.Recording:
-                float[] samples = this.recorder.Stop();
-                if (samples.Length < MinSamples)
-                {
-                    this.state = VoiceState.Idle;
-                    Notify("录音太短，没有识别到语音。");
-                    return;
-                }
-                this.state = VoiceState.Transcribing;
-                Notify("正在识别语音…");
-                this.TranscribeAsync(samples);
+                this.EndRecording();
                 break;
 
             case VoiceState.Transcribing:
                 Notify("正在识别中，请稍候…");
                 break;
         }
+    }
+
+    /// <summary>
+    /// Stop an active recording without transcribing, or discard the result of an in-progress
+    /// transcription. This is safe to call when leaving a save or returning to the title screen.
+    /// </summary>
+    public void Cancel(bool notify = true)
+    {
+        if (this.isDisposed)
+            return;
+
+        switch (this.state)
+        {
+            case VoiceState.Recording:
+                this.recorder.Stop();
+                this.state = VoiceState.Idle;
+                if (notify && Context.IsWorldReady)
+                    Notify("已取消语音录制。");
+                break;
+
+            case VoiceState.Transcribing:
+                lock (this.sync)
+                    this.dropTranscriptionResult = true;
+                if (notify && Context.IsWorldReady)
+                    Notify("已取消语音识别。");
+                break;
+        }
+    }
+
+    private bool BeginRecording(bool toggleMode)
+    {
+        if (this.isDisposed || !Context.IsWorldReady || !Context.IsPlayerFree)
+            return false;
+
+        switch (this.state)
+        {
+            case VoiceState.Recording:
+                return false;
+
+            case VoiceState.Transcribing:
+                Notify("正在识别中，请稍候…");
+                return false;
+        }
+
+        if (!this.recorder.Start())
+        {
+            Notify("无法启动麦克风，请检查系统录音权限。");
+            return false;
+        }
+
+        this.state = VoiceState.Recording;
+        Notify(toggleMode
+            ? $"[录音中] 再次按 {this.hotkeyLabel} 结束"
+            : $"[录音中] 松开 {this.hotkeyLabel} 后开始识别");
+        return true;
+    }
+
+    private void FinishRecording(bool reachedTimeLimit)
+    {
+        float[] samples = this.recorder.Stop();
+        if (samples.Length < MinSamples)
+        {
+            this.state = VoiceState.Idle;
+            Notify("录音太短，没有识别到语音。");
+            return;
+        }
+
+        this.state = VoiceState.Transcribing;
+        lock (this.sync)
+        {
+            this.dropTranscriptionResult = false;
+            this.transcriptionInProgress = true;
+            this.transcriptionCompleted = false;
+            this.completedText = string.Empty;
+        }
+
+        Notify(reachedTimeLimit
+            ? "已达到最长录音时间，正在识别语音…"
+            : "正在识别语音…");
+        this.TranscribeAsync(samples);
     }
 
     private void TranscribeAsync(float[] samples)
@@ -95,17 +221,55 @@ internal sealed class VoiceInputController : IDisposable
                 text = string.Empty;
             }
 
-            this.mainThread.Enqueue(() =>
+            bool shouldDisposeTranscriber;
+            lock (this.sync)
             {
-                this.state = VoiceState.Idle;
-                if (text.Length == 0)
-                {
-                    Notify("没有识别到有效语音，请重试。");
-                    return;
-                }
-                this.onTranscribed(text);
-            });
+                this.completedText = text;
+                this.transcriptionCompleted = true;
+                this.transcriptionInProgress = false;
+                shouldDisposeTranscriber = this.isDisposed;
+            }
+
+            if (shouldDisposeTranscriber)
+                this.transcriber.Dispose();
+            else
+                this.mainThread.Enqueue(this.ProcessCompletedTranscription);
         });
+    }
+
+    /// <summary>Consume a completed background result. Must be called on the game thread.</summary>
+    private void ProcessCompletedTranscription()
+    {
+        string text;
+        bool shouldDrop;
+        lock (this.sync)
+        {
+            if (!this.transcriptionCompleted)
+                return;
+
+            text = this.completedText;
+            shouldDrop = this.dropTranscriptionResult
+                || this.isDisposed
+                || !Context.IsWorldReady
+                || !Context.IsPlayerFree
+                || Game1.activeClickableMenu is not null
+                || Game1.chatBox?.isActive() == true;
+            this.completedText = string.Empty;
+            this.transcriptionCompleted = false;
+            this.dropTranscriptionResult = false;
+        }
+
+        this.state = VoiceState.Idle;
+        if (shouldDrop)
+            return;
+
+        if (text.Length == 0)
+        {
+            Notify("没有识别到有效语音，请重试。");
+            return;
+        }
+
+        this.onTranscribed(text);
     }
 
     private static void Notify(string message)
@@ -115,7 +279,23 @@ internal sealed class VoiceInputController : IDisposable
 
     public void Dispose()
     {
+        if (this.isDisposed)
+            return;
+
+        this.Cancel(notify: false);
+        bool disposeTranscriberNow;
+        lock (this.sync)
+        {
+            this.isDisposed = true;
+            this.dropTranscriptionResult = true;
+            this.completedText = string.Empty;
+            this.transcriptionCompleted = false;
+            disposeTranscriberNow = !this.transcriptionInProgress;
+        }
+
+        this.state = VoiceState.Idle;
         this.recorder.Dispose();
-        this.transcriber.Dispose();
+        if (disposeTranscriberNow)
+            this.transcriber.Dispose();
     }
 }

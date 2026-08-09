@@ -23,8 +23,8 @@ public sealed class ModConfig
     public bool IncludeGameContext { get; set; } = true;
     public bool EnableQuestLogTool { get; set; } = true;
 
-    // Voice input (push-to-talk): press the hotkey once to start recording, again to stop
-    // and transcribe locally, then the recognized text is sent through the normal ask flow.
+    // Voice input (push-to-talk): hold the hotkey to record, then release it to
+    // transcribe locally and send the recognized text through the normal ask flow.
     public bool EnableVoiceInput { get; set; } = true;
     public string VoiceHotkey { get; set; } = "V";
     public int VoiceMaxSeconds { get; set; } = 30;
