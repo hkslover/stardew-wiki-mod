@@ -1,41 +1,106 @@
-# Stardew Wiki AI Agent
+<div align="center">
+  <h1>Stardew Wiki AI Agent</h1>
+  <p>把中文星露谷 Wiki 放进游戏聊天框。</p>
+  <p>
+    <code>Stardew Valley 1.6.15+</code>
+    · <code>SMAPI 4.5.2+</code>
+    · 中文 Wiki
+    · 本地语音输入
+  </p>
+</div>
 
-一个适用于 Stardew Valley 1.6.15 与 SMAPI 4.5.2 的中文 Wiki 问答 Mod。载入存档后，在聊天框输入 `/ask <问题>`，即可获得结合中文 Stardew Valley Wiki 和当前游戏状态的回答与来源。
+---
+
+不用再切出游戏查资料。载入存档后，在聊天框输入 `/ask <问题>`，Mod 会查阅中文 Stardew Valley Wiki，再结合当前存档给出回答和来源。问到地点时，还能直接在游戏里显示方向箭头。
 
 ## 功能
 
-- 检索并阅读中文 Stardew Valley Wiki；
-- 只读获取季节、天气、背包、玩家状态、关系信息和当前任务日志；
-- 当玩家提到当前任务或询问下一步时，AI 可按需读取任务目标，结合 Wiki 给出建议；
-- 询问地点位置时，可根据游戏当前加载的世界地图数据在玩家脚边显示实时方向箭头；
-- 按住语音快捷键（默认 `V`）录音，松开后在本地完成中文语音识别并提问；
-- 通过直接的 OpenAI-compatible Chat Completions HTTP 请求接入兼容接口（`HttpClient` + `System.Text.Json`，不依赖官方 OpenAI SDK）；
-- 提供 API，允许其他 SMAPI Mod 注册扩展工具。
+| 功能 | 说明 |
+| --- | --- |
+| **Wiki 问答** | 检索并阅读中文 Stardew Valley Wiki，回答后附上来源 |
+| **存档信息** | 按需读取时间、天气、背包、状态、技能、关系和任务日志 |
+| **任务建议** | 根据当前任务目标查 Wiki，告诉你下一步该做什么 |
+| **地点导航** | 用游戏当前的世界地图数据定位地点，实时显示方向箭头 |
+| **语音提问** | 按住快捷键录音，松开后在本地完成中文语音识别 |
+| **Mod 扩展** | 其他 SMAPI Mod 可以通过公开 API 注册新的工具 |
 
-导航接近目标后会自动结束并显示 HUD 提示。输入 `/ask nav stop` 可以随时停止当前导航；如果地点名称有歧义或游戏世界地图中没有对应数据，则不会启动箭头。
+内置游戏工具只读取信息，不会替玩家改钱、加物品或完成任务。导航只负责带路，到达目标附近后会自动结束。
 
-常用控制命令：`/ask stop`（或 `/ask cancel`）取消当前 AI 查询，`/ask nav stop` 停止当前导航，`/ask status` 查看查询与导航状态，`/ask config` 打开设置菜单，`/ask help` 查看帮助。
+## 快速开始
 
-首次载入存档时会显示一次简短的文字与语音使用提示，之后可随时通过 `/ask help` 再次查看。
+1. 安装 Stardew Valley `1.6.15+` 与 SMAPI `4.5.2+`。
+2. 下载发布包，解压到游戏的 `Mods` 目录。
+3. 通过 SMAPI 启动游戏并载入存档。
+4. 输入 `/ask config`，填写模型服务地址、模型名称和 API Key。
+5. 保存设置，重启 SMAPI 后即可提问。
+
+以 DeepSeek 为例：
+
+| 设置 | 示例 |
+| --- | --- |
+| LLM 服务地址 | `https://api.deepseek.com` |
+| 模型 | `deepseek-v4-flash` |
+| API Key | 你自己的 DeepSeek API Key |
+
+```text
+/ask 春天第一年种什么比较合适？
+/ask 海莉喜欢哪些礼物？
+/ask 日志里的“认识法师”下一步要去哪？
+/ask 矿井怎么走？
+```
+
+## 常用命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `/ask <问题>` | 提问 |
+| `/ask stop` | 取消正在进行的查询 |
+| `/ask nav stop` | 停止当前导航 |
+| `/ask status` | 查看查询和导航状态 |
+| `/ask config` | 打开游戏内设置菜单 |
+| `/ask help` | 查看简短说明 |
 
 ## 配置
 
-首次运行会生成 `config.json`。可通过 `/ask config` 打开与游戏原版界面一致的设置菜单，配置 LLM、Wiki、回答限制、游戏状态工具和语音输入等全部选项；保存后重启 SMAPI 即可全部生效。也可以直接编辑 `config.json`，或使用环境变量 `OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_API_KEY`。
+第一次运行会生成 `config.json`。大部分设置都能在 `/ask config` 中修改，也可以直接编辑文件，或用 `OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_API_KEY` 环境变量覆盖模型配置。
 
-`MaxResponseTokens` 默认是 `8192`，控制模型单次返回的 token 上限；旧版本自动生成的默认值 `2048` 会在下次启动时迁移到 `8192`。`MaxAnswerCharacters` 默认仍为 `1800`，它只控制最终显示在聊天框里的正文字符数，两者不是同一个限制。
+- `ReasoningEffort`：默认为 `medium`，可选 `low`、`medium`、`high`。
+- `MaxResponseTokens`：模型单次返回上限，默认为 `8192`。
+- `MaxAnswerCharacters`：聊天框正文长度，默认为 `1800`。
+- `EnableQuestLogTool`：是否允许按需读取当前任务日志，默认为 `true`。
+- `EnableVoiceInput`：是否启用本地语音识别，默认为 `true`。
+- `VoiceHotkey`：按住录音、松开识别，默认为 `V`。
 
-使用 DeepSeek V4 Flash/Pro 时，将 `BaseUrl` 设置为 `https://api.deepseek.com`、`Model` 设置为对应的 `deepseek-v4-*` 名称，并填写 DeepSeek API Key。Mod 的协议客户端会直接发送 DeepSeek 专用的 `max_tokens`、思考模式（`thinking`）与思考等级（`reasoning_effort`）字段；带 Wiki 工具调用时也会在后续轮次中原样回放 DeepSeek 返回的 `reasoning_content`。
+API Key 会以明文保存在本机的 `config.json` 中，请不要把这个文件提交到公开仓库。
 
-`ReasoningEffort` 控制思考等级，默认 `medium`，可选 `low`/`medium`/`high`。它只作用于 DeepSeek V4 这类推理模型：等级越低，单次查询消耗的按量计费思考 token 越少；需要更强推理时再调到 `high`。
+## 语音输入
 
-`EnableQuestLogTool` 默认为 `true`。关闭后，任务日志读取工具不会注册，任务内容也不会发送给所配置的 AI 服务。任务日志只在问题确实涉及当前任务时按需读取，不会读取 SMAPI 调试日志或磁盘文件。
+语音识别由随 Mod 提供的 sherpa-onnx 模型在本地完成，录音不会上传；识别出的文字仍会作为问题发送给你配置的模型服务。如果语音模型、原生库或麦克风不可用，文字提问不受影响。
 
-例如可询问：`/ask 日志里的“认识法师”下一步要去哪？`。AI 会先核对当前任务目标，再查询 Wiki；能够唯一定位目的地时会同时启动方向箭头。
-
-## 构建
+## 从源码构建
 
 ```bash
-dotnet build StardewWikiAgent.csproj -c Release
+# macOS：Debug 构建并部署
+./build.sh
+
+# macOS：Release 构建、部署并生成 zip
+./build.sh release
 ```
 
-项目采用 [MIT License](LICENSE)。
+```bat
+:: Windows：Debug / Release
+build.bat
+build.bat release
+```
+
+如果游戏不在默认位置，请先设置 `GamePath`。只检查编译、不部署到游戏目录：
+
+```bash
+dotnet build StardewWikiAgent.csproj -c Release -p:EnableModDeploy=false
+```
+
+其他 Mod 的扩展接口见 [`Api/AgentContracts.cs`](Api/AgentContracts.cs)。
+
+## License
+
+[MIT](LICENSE)
