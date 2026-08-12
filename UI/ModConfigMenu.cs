@@ -278,6 +278,7 @@ internal sealed class ModConfigMenu : IClickableMenu
         this.rows.Add(SettingRow.Choice("思考等级", "低 / 中 / 高；更高等级通常更慢且消耗更多。", new[] { "low", "medium", "high" }, value => this.working.ReasoningEffort = value));
         this.rows.Add(SettingRow.Boolean("包含游戏状态", "允许助手在提问时读取基础游戏状态。", value => this.working.IncludeGameContext = value));
         this.rows.Add(SettingRow.Boolean("启用任务日志工具", "允许助手按需读取当前任务日志。", value => this.working.EnableQuestLogTool = value));
+        this.rows.Add(SettingRow.Boolean("允许完整背包读取", "仅影响 mode=all；关闭后仍可查询容量和筛选物品。", value => this.working.AllowFullInventoryRead = value));
         this.rows.Add(SettingRow.Boolean("启用语音输入", "启用本地中文语音识别。", value => this.working.EnableVoiceInput = value));
         this.rows.Add(SettingRow.Text("语音快捷键", "SMAPI 按键名称，例如 V、F8 或 LeftShift。", value => this.working.VoiceHotkey = value));
         this.rows.Add(SettingRow.Integer("语音最长秒数", "单次录音允许范围：3–120 秒。", value => this.working.VoiceMaxSeconds = value, 3, 120));
@@ -322,6 +323,7 @@ internal sealed class ModConfigMenu : IClickableMenu
         this.rows.Single(row => row.Label == "思考等级").ChoiceValue = this.working.ReasoningEffort.ToLowerInvariant();
         this.rows.Single(row => row.Label == "包含游戏状态").BoolValue = this.working.IncludeGameContext;
         this.rows.Single(row => row.Label == "启用任务日志工具").BoolValue = this.working.EnableQuestLogTool;
+        this.rows.Single(row => row.Label == "允许完整背包读取").BoolValue = this.working.AllowFullInventoryRead;
         this.rows.Single(row => row.Label == "启用语音输入").BoolValue = this.working.EnableVoiceInput;
     }
 
@@ -629,6 +631,7 @@ internal sealed class ModConfigMenu : IClickableMenu
         ReasoningEffort = source.ReasoningEffort,
         IncludeGameContext = source.IncludeGameContext,
         EnableQuestLogTool = source.EnableQuestLogTool,
+        AllowFullInventoryRead = source.AllowFullInventoryRead,
         EnableVoiceInput = source.EnableVoiceInput,
         VoiceHotkey = source.VoiceHotkey,
         VoiceMaxSeconds = source.VoiceMaxSeconds,

@@ -47,7 +47,8 @@ internal sealed class ModEntry : Mod
         this.tools = new AgentToolRegistry(this.Monitor, this.mainThread);
         this.tools.Register(new WikiSearchTool(wiki));
         this.tools.Register(new WikiReadTool(wiki));
-        this.tools.Register(new InventoryTool());
+        this.tools.Register(new HeldItemTool());
+        this.tools.Register(new InventoryTool(this.config.AllowFullInventoryRead));
         this.tools.Register(new PlayerStatusTool());
         this.tools.Register(new RelationshipsTool());
         if (this.config.EnableQuestLogTool)
@@ -285,7 +286,7 @@ internal sealed class ModEntry : Mod
     }
 
     /// <summary>Run the agent for a question and present the answer. Shared by the chat command and voice input.</summary>
-    private void StartAskRequest(string question, ChatBox chat)
+    private void StartAskRequest(string question, ChatBox chat, GameContextSnapshot? capturedContext = null)
     {
         if (this.agent is null)
         {
@@ -299,7 +300,7 @@ internal sealed class ModEntry : Mod
             return;
         }
 
-        GameContextSnapshot context = GameContextSnapshot.Capture();
+        GameContextSnapshot context = capturedContext ?? GameContextSnapshot.Capture();
         RequestLease? request = this.TryStartRequest();
         if (request is null)
         {
@@ -518,6 +519,7 @@ internal sealed class ModEntry : Mod
                     this.mainThread,
                     this.Monitor,
                     this.voiceHotkey.ToString(),
+                    GameContextSnapshot.Capture,
                     this.OnVoiceTranscribed
                 );
                 this.Monitor.Log(
@@ -529,14 +531,14 @@ internal sealed class ModEntry : Mod
     }
 
     /// <summary>Called on the main thread with recognized text; routes it through the normal ask flow.</summary>
-    private void OnVoiceTranscribed(string question)
+    private void OnVoiceTranscribed(string question, GameContextSnapshot capturedContext)
     {
         ChatBox? chat = Game1.chatBox;
         if (chat is null)
             return;
 
         chat.addInfoMessage("[语音] " + question);
-        this.StartAskRequest(question, chat);
+        this.StartAskRequest(question, chat, capturedContext);
     }
 
     private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
@@ -644,7 +646,8 @@ internal sealed class ModEntry : Mod
             $"Configured={settings.IsConfigured}; Model={settings.Model}; " +
             $"BaseUrl={settings.BaseUrl}; WikiApi={settings.WikiApiUrl}; " +
             $"MaxSteps={settings.MaxAgentSteps}; MaxResponseTokens={settings.MaxResponseTokens}; " +
-            $"ReasoningEffort={settings.ReasoningEffort}; QuestLogTool={this.config.EnableQuestLogTool}",
+            $"ReasoningEffort={settings.ReasoningEffort}; QuestLogTool={this.config.EnableQuestLogTool}; " +
+            $"AllowFullInventoryRead={this.config.AllowFullInventoryRead}",
             LogLevel.Info
         );
     }

@@ -22,6 +22,7 @@ public sealed class ModConfig
     public string ReasoningEffort { get; set; } = "medium";
     public bool IncludeGameContext { get; set; } = true;
     public bool EnableQuestLogTool { get; set; } = true;
+    public bool AllowFullInventoryRead { get; set; } = true;
 
     // Voice input (push-to-talk): hold the hotkey to record, then release it to
     // transcribe locally and send the recognized text through the normal ask flow.

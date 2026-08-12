@@ -1,5 +1,6 @@
 using StardewModdingAPI;
 using StardewValley;
+using StardewWikiAgent.Game;
 using StardewWikiAgent.Threading;
 
 namespace StardewWikiAgent.Speech;
@@ -20,7 +21,8 @@ internal sealed class VoiceInputController : IDisposable
     private readonly SpeechTranscriber transcriber;
     private readonly MainThreadDispatcher mainThread;
     private readonly IMonitor monitor;
-    private readonly Action<string> onTranscribed;
+    private readonly Func<GameContextSnapshot> captureContext;
+    private readonly Action<string, GameContextSnapshot> onTranscribed;
     private readonly string hotkeyLabel;
     private readonly object sync = new();
 
@@ -30,6 +32,7 @@ internal sealed class VoiceInputController : IDisposable
     private bool transcriptionCompleted;
     private bool isDisposed;
     private string completedText = string.Empty;
+    private GameContextSnapshot? completedContext;
 
     public VoiceInputController(
         VoiceRecorder recorder,
@@ -37,13 +40,15 @@ internal sealed class VoiceInputController : IDisposable
         MainThreadDispatcher mainThread,
         IMonitor monitor,
         string hotkeyLabel,
-        Action<string> onTranscribed)
+        Func<GameContextSnapshot> captureContext,
+        Action<string, GameContextSnapshot> onTranscribed)
     {
         this.recorder = recorder;
         this.transcriber = transcriber;
         this.mainThread = mainThread;
         this.monitor = monitor;
         this.hotkeyLabel = hotkeyLabel;
+        this.captureContext = captureContext;
         this.onTranscribed = onTranscribed;
     }
 
@@ -140,6 +145,11 @@ internal sealed class VoiceInputController : IDisposable
             case VoiceState.Recording:
                 this.recorder.Stop();
                 this.state = VoiceState.Idle;
+                lock (this.sync)
+                {
+                    this.completedContext = null;
+                    this.completedText = string.Empty;
+                }
                 if (notify && Context.IsWorldReady)
                     Notify("已取消语音录制。");
                 break;
@@ -191,6 +201,21 @@ internal sealed class VoiceInputController : IDisposable
             return;
         }
 
+        GameContextSnapshot capturedContext;
+        try
+        {
+            // Capture before background transcription: the player may switch hotbar slots
+            // while the recognizer is working.
+            capturedContext = this.captureContext();
+        }
+        catch (Exception ex)
+        {
+            this.monitor.Log("Failed to capture game context for voice input: " + ex, LogLevel.Error);
+            this.state = VoiceState.Idle;
+            Notify("无法读取当前游戏状态，请重试。");
+            return;
+        }
+
         this.state = VoiceState.Transcribing;
         lock (this.sync)
         {
@@ -198,15 +223,16 @@ internal sealed class VoiceInputController : IDisposable
             this.transcriptionInProgress = true;
             this.transcriptionCompleted = false;
             this.completedText = string.Empty;
+            this.completedContext = null;
         }
 
         Notify(reachedTimeLimit
             ? "已达到最长录音时间，正在识别语音…"
             : "正在识别语音…");
-        this.TranscribeAsync(samples);
+        this.TranscribeAsync(samples, capturedContext);
     }
 
-    private void TranscribeAsync(float[] samples)
+    private void TranscribeAsync(float[] samples, GameContextSnapshot capturedContext)
     {
         _ = Task.Run(() =>
         {
@@ -225,6 +251,7 @@ internal sealed class VoiceInputController : IDisposable
             lock (this.sync)
             {
                 this.completedText = text;
+                this.completedContext = capturedContext;
                 this.transcriptionCompleted = true;
                 this.transcriptionInProgress = false;
                 shouldDisposeTranscriber = this.isDisposed;
@@ -241,6 +268,7 @@ internal sealed class VoiceInputController : IDisposable
     private void ProcessCompletedTranscription()
     {
         string text;
+        GameContextSnapshot? capturedContext;
         bool shouldDrop;
         lock (this.sync)
         {
@@ -248,6 +276,7 @@ internal sealed class VoiceInputController : IDisposable
                 return;
 
             text = this.completedText;
+            capturedContext = this.completedContext;
             shouldDrop = this.dropTranscriptionResult
                 || this.isDisposed
                 || !Context.IsWorldReady
@@ -255,6 +284,7 @@ internal sealed class VoiceInputController : IDisposable
                 || Game1.activeClickableMenu is not null
                 || Game1.chatBox?.isActive() == true;
             this.completedText = string.Empty;
+            this.completedContext = null;
             this.transcriptionCompleted = false;
             this.dropTranscriptionResult = false;
         }
@@ -269,7 +299,8 @@ internal sealed class VoiceInputController : IDisposable
             return;
         }
 
-        this.onTranscribed(text);
+        if (capturedContext is not null)
+            this.onTranscribed(text, capturedContext);
     }
 
     private static void Notify(string message)
@@ -289,6 +320,7 @@ internal sealed class VoiceInputController : IDisposable
             this.isDisposed = true;
             this.dropTranscriptionResult = true;
             this.completedText = string.Empty;
+            this.completedContext = null;
             this.transcriptionCompleted = false;
             disposeTranscriberNow = !this.transcriptionInProgress;
         }

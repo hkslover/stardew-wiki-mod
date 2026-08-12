@@ -17,32 +17,6 @@ internal static class GameToolJson
         );
 }
 
-/// <summary>Reads the player's carried inventory. Runs on the main thread and reads live game state.</summary>
-internal sealed class InventoryTool : IAgentTool
-{
-    public string Name => "get_inventory";
-    public string Description => "Read the names and quantities of items in the player's carried inventory. Use it to check what materials, gifts, crops, etc. the player currently has.";
-    public string ParametersSchemaJson => "{\"type\":\"object\",\"properties\":{}}";
-    public ToolExecutionAffinity ExecutionAffinity => ToolExecutionAffinity.MainThreadReadOnly;
-
-    public Task<string> ExecuteAsync(string argumentsJson, GameContextSnapshot context, CancellationToken cancellationToken)
-    {
-        if (!Context.IsWorldReady || Game1.player is null)
-            return Task.FromResult(GameToolJson.NotReady());
-
-        var items = Game1.player.Items
-            .Where(item => item is not null)
-            .Select(item => new { name = item!.DisplayName, quantity = item.Stack })
-            .ToArray();
-        return Task.FromResult(ToolResultEnvelope.Success(new
-        {
-            usedSlots = items.Length,
-            capacity = Game1.player.MaxItems,
-            items
-        }));
-    }
-}
-
 /// <summary>Reads money, energy, health, skill levels and today's luck.</summary>
 internal sealed class PlayerStatusTool : IAgentTool
 {

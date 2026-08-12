@@ -53,9 +53,13 @@ public sealed class GameContextSnapshot
             Health = player.health,
             Language = LocalizedContentManager.CurrentLanguageCode.ToString(),
             IsMultiplayer = Game1.IsMultiplayer,
-            IsMainPlayer = Context.IsMainPlayer
+            IsMainPlayer = Context.IsMainPlayer,
+            SelectedItem = SelectedItemSnapshot.Capture(player.CurrentItem, player.CurrentToolIndex + 1)
         };
     }
+
+    /// <summary>The hotbar item selected when this question context was captured.</summary>
+    public SelectedItemSnapshot? SelectedItem { get; init; }
 
     public string ToPromptText()
     {

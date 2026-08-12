@@ -11,6 +11,7 @@ internal sealed class AnswerPolicy
 
     private readonly bool needsNavigation;
     private readonly bool needsWikiFacts;
+    private readonly bool needsWikiForItemKnowledge;
     private bool navigationCorrectionSent;
     private bool wikiCorrectionSent;
 
@@ -20,9 +21,17 @@ internal sealed class AnswerPolicy
         this.needsNavigation = NavigationTerms.Any(term => normalized.Contains(term, StringComparison.Ordinal));
         this.needsWikiFacts = normalized.Length > 0
             && !normalized.Equals("stop", StringComparison.OrdinalIgnoreCase);
+        this.needsWikiForItemKnowledge = ContainsAny(normalized,
+            "有什么用", "用途", "能做什么", "怎么用", "如何用", "怎么获得", "如何获得", "获取", "获得",
+            "送给", "喜欢", "礼物", "配方", "食谱", "制作", "售价", "价格", "卖", "值多少钱", "效果");
     }
 
-    public string? GetCorrection(bool sawLocationResult, bool sawSuccessfulWikiRead, bool sawAnyToolCall)
+    public string? GetCorrection(
+        bool sawLocationResult,
+        bool sawSuccessfulWikiRead,
+        bool sawAnyToolCall,
+        bool sawSuccessfulItemStateRead
+    )
     {
         if (this.needsNavigation && !sawLocationResult && !this.navigationCorrectionSent)
         {
@@ -34,7 +43,11 @@ internal sealed class AnswerPolicy
         // tool at all). If it deliberately used any tool — e.g. get_player_status
         // for a state-only question — trust that choice instead of forcing a
         // pointless wiki_search/wiki_read round-trip.
-        if (this.needsWikiFacts && !sawSuccessfulWikiRead && !sawAnyToolCall && !this.wikiCorrectionSent)
+        if (this.needsWikiFacts
+            && !sawSuccessfulWikiRead
+            && (!sawAnyToolCall
+                || (this.needsWikiForItemKnowledge && sawSuccessfulItemStateRead))
+            && !this.wikiCorrectionSent)
         {
             this.wikiCorrectionSent = true;
             return "Answer only after consulting the Wiki: call wiki_search then wiki_read for the facts you need.";
@@ -42,4 +55,7 @@ internal sealed class AnswerPolicy
 
         return null;
     }
+
+    private static bool ContainsAny(string value, params string[] terms) =>
+        terms.Any(term => value.Contains(term, StringComparison.Ordinal));
 }
